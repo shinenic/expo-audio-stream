@@ -1,6 +1,6 @@
 import { Button, Platform, StyleSheet, Text, View } from "react-native";
 import { ExpoPlayAudioStream } from "@mykin-ai/expo-audio-stream";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { sampleA } from "./samples/sample-a";
 import { sampleB } from "./samples/sample-b";
 import { sampleC } from "./samples/sample-c";
@@ -24,9 +24,15 @@ export default function App() {
 
 
   const eventListenerSubscriptionRef = useRef<Subscription | undefined>(undefined);
+  const [recordingUri, setRecordingUri] = useState<string | null>(null);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
 
   const onAudioCallback = async (audio: AudioDataEvent) => {
-    console.log(audio.data.slice(0, 100));
+    // console.log(audio.data.slice(0, 100));
+    console.log({
+      ...audio,
+      data: audio.data.slice(0, 100),
+    })
   };
 
   const playEventsListenerSubscriptionRef = useRef<Subscription | undefined>(undefined);
@@ -44,9 +50,51 @@ export default function App() {
     }
   }, []);
 
+  // Clean up sound object when component unmounts
+  useEffect(() => {
+    return () => {
+      if (sound) {
+        sound.unloadAsync();
+      }
+    };
+  }, [sound]);
+
+  const playRecording = async () => {
+    try {
+      if (!recordingUri) {
+        console.log("No recording available");
+        return;
+      }
+      
+      // Unload any existing sound
+      if (sound) {
+        await sound.unloadAsync();
+      }
+      
+      // Create and play the new sound
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { uri: recordingUri }
+      );
+      setSound(newSound);
+      await newSound.playAsync();
+    } catch (error) {
+      console.error("Failed to play recording", error);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <Text>hi</Text>
+      <Button
+        onPress={async () => {
+          const permissionGranted = await requestMicrophonePermission();
+          if (!permissionGranted) {
+            return;
+          }
+          await ExpoPlayAudioStream.playAudio(sampleA, turnId1);
+        }}
+        title="Request microphone permission"
+      />
       <Button
         onPress={async () => {
           await ExpoPlayAudioStream.playAudio(sampleB, turnId1);
@@ -111,7 +159,11 @@ export default function App() {
       <Button
         onPress={async () => {
           
-          await ExpoPlayAudioStream.stopMicrophone();
+         const recordingResult = await ExpoPlayAudioStream.stopMicrophone();
+         console.log(JSON.stringify(recordingResult, null, 2));
+         if (recordingResult?.fileUri) {
+           setRecordingUri(recordingResult.fileUri);
+         }
           if (eventListenerSubscriptionRef.current) {
             eventListenerSubscriptionRef.current.remove();
             eventListenerSubscriptionRef.current = undefined;
@@ -120,6 +172,14 @@ export default function App() {
         title="Stop Recording"
       />
        <View style={{ height: 10, marginBottom: 10 }}>
+        <Text>====================</Text>
+      </View>
+      <Button
+        onPress={playRecording}
+        title="Play Recording"
+        disabled={!recordingUri}
+      />
+      <View style={{ height: 10, marginBottom: 10 }}>
         <Text>====================</Text>
       </View>
       <Button

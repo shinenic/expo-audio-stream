@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "expo-audio-stream-example",
+    "name": "Awesome app",
     "slug": "expo-audio-stream",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,14 +16,22 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "ai.mykin.audiostream.dev"
+      "bundleIdentifier": "ai.mykin.audiostream.dev",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera",
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to access your microphone"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "ai.mykin.audiostream.dev"
+      "package": "ai.mykin.audiostream.dev",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -34,6 +42,17 @@
       }
     },
     "owner": "mykin-ai",
-    "plugins": ["../app.plugin.js"]
+    "plugins": [
+      "../app.plugin.js",
+      [
+        "react-native-permissions",
+        {
+          "iosPermissions": [
+            "Camera",
+            "Microphone"
+          ]
+        }
+      ]
+    ]
   }
 }

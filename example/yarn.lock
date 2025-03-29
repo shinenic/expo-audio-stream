@@ -4345,6 +4345,7 @@ __metadata:
     expo-av: "npm:~13.10.6"
     react: "npm:18.2.0"
     react-native: "npm:0.73.6"
+    react-native-permissions: "npm:^5.3.0"
     typescript: "npm:^5.1.3"
   languageName: unknown
   linkType: soft
@@ -7258,6 +7259,20 @@ __metadata:
   version: 18.2.0
   resolution: "react-is@npm:18.2.0"
   checksum: 10c0/6eb5e4b28028c23e2bfcf73371e72cd4162e4ac7ab445ddae2afe24e347a37d6dc22fae6e1748632cd43c6d4f9b8f86dcf26bf9275e1874f436d129952528ae0
+  languageName: node
+  linkType: hard
+
+"react-native-permissions@npm:^5.3.0":
+  version: 5.3.0
+  resolution: "react-native-permissions@npm:5.3.0"
+  peerDependencies:
+    react: ">=18.1.0"
+    react-native: ">=0.70.0"
+    react-native-windows: ">=0.70.0"
+  peerDependenciesMeta:
+    react-native-windows:
+      optional: true
+  checksum: 10c0/237aba686fe8ef59a6a1dbf76ed1105680f4717be05719c46b0950351406f9356093bf594cb2d9921e6778246f7c1810d7b886cbef2f951575688a45f0c1edc4
   languageName: node
   linkType: hard
 
