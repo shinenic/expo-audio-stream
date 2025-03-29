@@ -1,0 +1,75 @@
+TODOs
+
+- [ ] remove all playing logic (native modules)
+- [ ] save chunks
+- [ ] encode audio container format
+- [ ] check permissions
+- [ ] check background mode
+- [ ] check memory management
+- [ ] check thread safety
+
+
+
+---
+
+
+我已經使用 npx create-expo-module 產生一個 local expo module，請你基於這個架構實作以下功能
+支援 iOS/android@ExpoRecordingModule.kt @ExpoRecordingModule.swift  以及 js interface
+@ExpoRecordingModule.ts 
+
+主要功能為
+
+- 提供錄音
+- 錄音的同時，在指定時間 interval 內，將 audio buffer 使用 ACC 壓縮，並且儲存為 .m4a 的 chunk file，回傳 string (chunk file path) 給 JS 層
+- 錄音結束後，將全部的 chunk file 合併成一個 .m4a 的檔案，回傳 string (final file path) 給 JS 層
+- 支援背景模式錄音
+- 支援錄音中暫停、繼續錄音
+- 支援錄音中 discard 錄音
+- 支援錄音中 status update
+
+以下是我設計的 js 層 interface，請使用他來實作 expo native module，如果需要修改也可以
+
+```ts
+type AudioRecorderOptions = {
+  channelConfig: "MONO" | "STEREO",
+  audioContainerFormat: "M4A",
+  audioFormat: "PCM_8BIT" | "PCM_16BIT" | "PCM_FLOAT",
+  sampleRate: number,
+  samplingSize: number,
+
+  chunkInterval: number,
+  statusUpdateInterval: number,
+  chunkCachePath: string,
+  finalFilePath: string,
+  onChunk: (data: { path: string, size: number, duration: number, index: number }) => void,
+  onFinal: (data: { path: string, size: number, duration: number }) => void,
+  onError: (error: string) => void,
+  onDiscard: () => void,
+  onStatusUpdate: (status: {
+    isRecording: boolean,
+    currentTime: number,
+  }) => void,
+}
+
+type AudioRecorderResponse = {
+  id: string,
+  start: () => Promise<void>,
+  pause: () => Promise<void>,
+  resume: () => Promise<void>,
+  stop: () => Promise<void>,
+  discard: () => Promise<void>,
+}
+
+function createAudioRecorder(options: AudioRecorderOptions): Promise<AudioRecorderResponse>
+```
+
+
+please care about 
+- Proper resource cleanup
+- Error handling
+- Background mode support
+- Efficient audio processing
+- Memory management
+- Thread safety
+
+接著在 @App.tsx 中實作使用 react-native-permissions 取得錄音權限後做簡單的 demo
