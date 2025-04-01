@@ -51,20 +51,36 @@ export class ExpoPlayAudioStream {
 
     if (onAudioStream && typeof onAudioStream == "function") {
       subscription = addAudioEventListener(async (event: AudioEventPayload) => {
-        const { fileUri, deltaSize, totalSize, position, encoded, soundLevel } =
-          event;
-        if (!encoded) {
-          console.error(`[ExpoPlayAudioStream] Encoded audio data is missing`);
-          throw new Error("Encoded audio data is missing");
-        }
-        onAudioStream?.({
-          data: encoded,
+        const {
+          fileUri,
+          deltaSize,
+          totalSize,
+          position,
+          encoded,
+          soundLevel,
+          chunkFileUri,
+          chunkFileSize,
+          chunkDuration,
+        } = event;
+
+        // Prepare the event data to send to the callback
+        const audioEvent: AudioDataEvent = {
+          data: encoded || "",
           position,
           fileUri,
           eventDataSize: deltaSize,
           totalSize,
           soundLevel,
-        });
+        };
+
+        // Add chunk information if available
+        if (chunkFileUri) {
+          audioEvent.chunkFileUri = chunkFileUri;
+          audioEvent.chunkFileSize = chunkFileSize;
+          audioEvent.chunkDuration = chunkDuration;
+        }
+
+        onAudioStream(audioEvent);
       });
     }
 
@@ -254,46 +270,57 @@ export class ExpoPlayAudioStream {
     recordingResult: StartRecordingResult;
     subscription?: Subscription;
   }> {
+    const { onAudioStream, ...options } = recordingConfig;
+
     let subscription: Subscription | undefined;
+
+    if (onAudioStream) {
+      subscription = addAudioEventListener(async (event: AudioEventPayload) => {
+        const {
+          fileUri,
+          deltaSize,
+          totalSize,
+          position,
+          encoded,
+          soundLevel,
+          chunkFileUri,
+          chunkFileSize,
+          chunkDuration,
+        } = event;
+
+        // Prepare the event data to send to the callback
+        const audioEvent: AudioDataEvent = {
+          data: encoded || "",
+          position,
+          fileUri,
+          eventDataSize: deltaSize,
+          totalSize,
+          soundLevel,
+        };
+
+        // Add chunk information if available
+        if (chunkFileUri) {
+          audioEvent.chunkFileUri = chunkFileUri;
+          audioEvent.chunkFileSize = chunkFileSize;
+          audioEvent.chunkDuration = chunkDuration;
+        }
+
+        onAudioStream(audioEvent);
+      });
+    }
+
     try {
-      const { onAudioStream, ...options } = recordingConfig;
+      const recordingResult = await ExpoPlayAudioStreamModule.startMicrophone(
+        options
+      );
 
-      if (onAudioStream && typeof onAudioStream == "function") {
-        subscription = addAudioEventListener(
-          async (event: AudioEventPayload) => {
-            const {
-              fileUri,
-              deltaSize,
-              totalSize,
-              position,
-              encoded,
-              soundLevel,
-            } = event;
-            if (!encoded) {
-              console.error(
-                `[ExpoPlayAudioStream] Encoded audio data is missing`
-              );
-              throw new Error("Encoded audio data is missing");
-            }
-            onAudioStream?.({
-              data: encoded,
-              position,
-              fileUri,
-              eventDataSize: deltaSize,
-              totalSize,
-              soundLevel,
-            });
-          }
-        );
-      }
-
-      const result = await ExpoPlayAudioStreamModule.startMicrophone(options);
-
-      return { recordingResult: result, subscription };
+      return { recordingResult, subscription };
     } catch (error) {
       console.error(error);
-      subscription?.remove();
-      throw new Error(`Failed to start recording: ${error}`);
+      if (subscription) {
+        subscription.remove();
+      }
+      throw new Error(`Failed to start microphone: ${error}`);
     }
   }
 
@@ -418,7 +445,6 @@ export class ExpoPlayAudioStream {
   static toggleSilence() {
     ExpoPlayAudioStreamModule.toggleSilence();
   }
-
 }
 
 export {

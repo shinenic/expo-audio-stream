@@ -11,6 +11,9 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.os.bundleOf
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import expo.modules.kotlin.Promise
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -43,6 +46,11 @@ class AudioRecorderManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioRecordLock = Any()
     private var audioFileHandler: AudioFileHandler = AudioFileHandler(filesDir)
+    
+    // Track WebM chunk files for later concatenation
+    private val webmChunkFiles = mutableListOf<File>()
+    private var chunkCounter = 0
+    private var isFirstChunk = true
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/wav"
@@ -59,6 +67,11 @@ class AudioRecorderManager(
             promise.reject("ALREADY_RECORDING", "Recording is already in progress", null)
             return
         }
+
+        // Reset the chunk tracking variables
+        webmChunkFiles.clear()
+        chunkCounter = 0
+        isFirstChunk = true
 
         // Initialize the recording configuration
         var tempRecordingConfig = RecordingConfig(
@@ -159,6 +172,8 @@ class AudioRecorderManager(
 
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
+
+        interval = recordingConfig.interval
 
         // Recalculate bufferSizeInBytes if the format has changed
         bufferSizeInBytes = AudioRecord.getMinBufferSize(
@@ -329,13 +344,74 @@ class AudioRecorderManager(
                     "size" to fileSize,
                     "mimeType" to mimeType
                 )
-                promise.resolve(result)
+                
+                if (webmChunkFiles.isNotEmpty()) {
+                    
+                    val concatOutputFile = File(filesDir, "concat_${streamUuid}.webm")
+                    val filterComplex = StringBuilder()
+                    val inputArgs = StringBuilder()
+                    for (i in webmChunkFiles.indices) {
+                        inputArgs.append("-i ${webmChunkFiles[i].absolutePath} ")
+                        filterComplex.append("[$i:a]")
+                    }
+                    
+                    filterComplex.append("concat=n=${webmChunkFiles.size}:v=0:a=1[aout]")
+                    
+                    val concatCommand = inputArgs.toString() +
+                            "-filter_complex \"${filterComplex}\" " +
+                            "-map \"[aout]\" " +
+                            "-c:a libopus " +
+                            "-b:a 128k " + 
+                            "-application audio " + // Audio application mode for highest quality
+                            "-avoid_negative_ts make_zero " + // Handle timestamp issues
+                            "-fflags +bitexact " + // Ensure exact bit-for-bit output
+                            "${concatOutputFile.absolutePath}"
+                    
+                    val concatSession = FFmpegKit.execute(concatCommand)
+                    
+                    if (ReturnCode.isSuccess(concatSession.returnCode)) {
+                        // Get metadata for the concatenated file
+                        var concatDuration = 0L
+                        val concatSize = concatOutputFile.length()
+                        
+                        // Get duration using FFmpeg
+                        val durationCommand = "-i ${concatOutputFile.absolutePath} -show_entries format=duration -v quiet -of csv=\"p=0\""
+                        FFmpegKit.execute(durationCommand).also { durationSession ->
+                            if (ReturnCode.isSuccess(durationSession.returnCode)) {
+                                val durationStr = durationSession.output
+                                try {
+                                    concatDuration = (durationStr.toFloat() * 1000).toLong()
+                                } catch (e: Exception) {
+                                    Log.e(Constants.TAG, "Failed to parse concat duration: $durationStr", e)
+                                }
+                            }
+                        }
+                        
+                        // Add concatenated file info to the result
+                        val resultWithConcat = result.apply {
+                            putString("concatFileUri", concatOutputFile.toURI().toString())
+                            putString("concatFilename", concatOutputFile.name)
+                            putLong("concatDurationMs", concatDuration)
+                            putLong("concatSize", concatSize)
+                            putString("concatMimeType", "audio/webm")
+                        }
+                        
+                        promise.resolve(resultWithConcat)
+                    } else {
+                        promise.resolve(result)
+                    }
+                } else {
+                    promise.resolve(result)
+                }
 
                 // Reset the timing variables
                 isRecording.set(false)
                 isPaused.set(false)
                 totalRecordedTime = 0
                 pausedDuration = 0
+                webmChunkFiles.clear()
+                chunkCounter = 0
+                isFirstChunk = true
             } catch (e: Exception) {
                 Log.d(Constants.TAG, "Failed to stop recording", e)
                 promise.reject("STOP_FAILED", "Failed to stop recording", e)
@@ -490,8 +566,6 @@ class AudioRecorderManager(
     }
 
     private fun emitAudioData(audioData: ByteArray, length: Int) {
-        val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
-
         val fileSize = audioFile?.length() ?: 0
         val from = lastEmittedSize
         val deltaSize = fileSize - lastEmittedSize
@@ -499,24 +573,145 @@ class AudioRecorderManager(
 
         // Calculate position in milliseconds
         val positionInMs = (from * 1000) / (recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8)
-
-        mainHandler.post {
-            try {
-                eventSender.sendExpoEvent(
-                    Constants.AUDIO_EVENT_NAME, bundleOf(
-                        "fileUri" to audioFile?.toURI().toString(),
-                        "lastEmittedSize" to from,
-                        "encoded" to encodedBuffer,
-                        "deltaSize" to length,
-                        "position" to positionInMs,
-                        "mimeType" to mimeType,
-                        "totalSize" to fileSize,
-                        "streamUuid" to streamUuid
-                    )
-                )
-            } catch (e: Exception) {
-                Log.e(Constants.TAG, "Failed to send event", e)
+        
+        // Create temporary PCM file for this chunk
+        val tempPcmFile = File(filesDir, "temp_chunk_${streamUuid}_${chunkCounter}.pcm")
+        try {
+            FileOutputStream(tempPcmFile).use { fos ->
+                fos.write(audioData, 0, length)
             }
+            
+            val webmChunkFile = File(filesDir, "chunk_${streamUuid}_${chunkCounter}.webm")
+            chunkCounter++
+            
+            val bitrate = "128k"
+            val compressionLevel = "10"
+            
+            // Convert PCM to WebM (Opus)
+            val ffmpegCommand = "-f " + 
+                    when (recordingConfig.encoding) {
+                        "pcm_8bit" -> "u8"
+                        "pcm_16bit" -> "s16le"
+                        "pcm_32bit" -> "f32le"
+                        else -> "s16le"
+                    } + 
+                    " -ar ${recordingConfig.sampleRate} " +
+                    "-ac ${recordingConfig.channels} " +
+                    "-i ${tempPcmFile.absolutePath} " +
+                    "-c:a libopus " +
+                    "-b:a $bitrate " +
+                    "-compression_level $compressionLevel " +
+                    "-application audio " + // "audio" mode is optimized for high quality audio
+                    "-vbr off " + // Use constant bitrate for more consistent chunks
+                    "-frame_duration 20 " + // 20ms frame size is optimal for Opus
+                    "-mapping_family 1 " + // Ensure consistent mapping
+                    "-strict experimental " + // Allow experimental encoders
+                    "-fflags +bitexact " + // Ensure exact bit-for-bit output
+                    webmChunkFile.absolutePath
+            
+            FFmpegKit.executeAsync(ffmpegCommand, { session ->
+                if (ReturnCode.isSuccess(session.returnCode)) {
+                    Log.d(Constants.TAG, "Successfully converted chunk to WebM")
+                    
+                    val durationCommand = "-i ${webmChunkFile.absolutePath} -show_entries format=duration -v quiet -of csv=\"p=0\""
+                    FFmpegKit.execute(durationCommand).also { durationSession ->
+                        var chunkDuration = 0L
+                        if (ReturnCode.isSuccess(durationSession.returnCode)) {
+                            val durationStr = durationSession.output
+                            try {
+                                chunkDuration = (durationStr.toFloat() * 1000).toLong()
+                            } catch (e: Exception) {
+                                Log.e(Constants.TAG, "Failed to parse duration: $durationStr", e)
+                                chunkDuration = 0L
+                            }
+                        }
+                        
+                        // Keep reference to this file for sending to client
+                        // but only add to concatenation list if it's not the first chunk
+                        val isFirstChunkLocal = isFirstChunk
+                        if (!isFirstChunkLocal) {
+                            webmChunkFiles.add(webmChunkFile)
+                            Log.d(Constants.TAG, "Added chunk to concatenation list")
+                        } else {
+                            Log.d(Constants.TAG, "Skipping first chunk for concatenation (contains initialization noise)")
+                            isFirstChunk = false
+                        }
+                        
+                        mainHandler.post {
+                            try {
+                                eventSender.sendExpoEvent(
+                                    Constants.AUDIO_EVENT_NAME, bundleOf(
+                                        "fileUri" to audioFile?.toURI().toString(),
+                                        "lastEmittedSize" to from,
+                                        "deltaSize" to length,
+                                        "position" to positionInMs,
+                                        "mimeType" to mimeType,
+                                        "totalSize" to fileSize,
+                                        "streamUuid" to streamUuid,
+                                        "chunkFileUri" to webmChunkFile.toURI().toString(),
+                                        "chunkFileSize" to webmChunkFile.length(),
+                                        "chunkDuration" to chunkDuration,
+                                        "isFirstChunk" to isFirstChunkLocal
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                Log.e(Constants.TAG, "Failed to send event", e)
+                            }
+                        }
+                    }
+                } else {
+                    Log.e(Constants.TAG, "FFmpeg failed to convert chunk to WebM: ${session.returnCode}")
+                    
+                    mainHandler.post {
+                        try {
+                            val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
+                            eventSender.sendExpoEvent(
+                                Constants.AUDIO_EVENT_NAME, bundleOf(
+                                    "fileUri" to audioFile?.toURI().toString(),
+                                    "lastEmittedSize" to from,
+                                    "deltaSize" to length,
+                                    "position" to positionInMs,
+                                    "mimeType" to mimeType,
+                                    "totalSize" to fileSize,
+                                    "streamUuid" to streamUuid
+                                )
+                            )
+                        } catch (e: Exception) {
+                            Log.e(Constants.TAG, "Failed to send event", e)
+                        }
+                    }
+                }
+                
+                // Delete the temporary PCM file
+                tempPcmFile.delete()
+            }, null, null)
+            
+        } catch (e: IOException) {
+            Log.e(Constants.TAG, "Failed to create temporary PCM file", e)
+            
+            // Fall back to the original behavior if we can't convert to WebM
+            val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
+            mainHandler.post {
+                try {
+                    eventSender.sendExpoEvent(
+                        Constants.AUDIO_EVENT_NAME, bundleOf(
+                            "fileUri" to audioFile?.toURI().toString(),
+                            "lastEmittedSize" to from,
+                            "encoded" to encodedBuffer,
+                            "deltaSize" to length,
+                            "position" to positionInMs,
+                            "mimeType" to mimeType,
+                            "totalSize" to fileSize,
+                            "streamUuid" to streamUuid
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.e(Constants.TAG, "Failed to send event", e)
+                }
+            }
+            
+            // Clean up
+            tempPcmFile.delete()
         }
     }
 
