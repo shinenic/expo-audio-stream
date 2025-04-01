@@ -11,13 +11,35 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.os.bundleOf
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import expo.modules.kotlin.Promise
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
+class ChunkManager(private val filesDir: File) {
+    private val chunks = mutableListOf<File>()
+    private val chunkCounter = AtomicInteger(0)
+
+    fun createChunkFile(): File {
+        val chunkFile = File(filesDir, "chunk_${chunkCounter.getAndIncrement()}.wav")
+        chunks.add(chunkFile)
+        return chunkFile
+    }
+
+    fun getChunks(): List<File> = chunks.toList()
+
+    fun clear() {
+        chunks.forEach { it.delete() }
+        chunks.clear()
+        chunkCounter.set(0)
+    }
+}
 
 class AudioRecorderManager(
     private val filesDir: File,
@@ -43,6 +65,7 @@ class AudioRecorderManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioRecordLock = Any()
     private var audioFileHandler: AudioFileHandler = AudioFileHandler(filesDir)
+    private val chunkManager = ChunkManager(filesDir)
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/wav"
@@ -160,6 +183,8 @@ class AudioRecorderManager(
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
 
+        interval = recordingConfig.interval
+
         // Recalculate bufferSizeInBytes if the format has changed
         bufferSizeInBytes = AudioRecord.getMinBufferSize(
             recordingConfig.sampleRate,
@@ -275,7 +300,6 @@ class AudioRecorderManager(
 
     fun stopRecording(promise: Promise) {
         synchronized(audioRecordLock) {
-
             if (!isRecording.get()) {
                 Log.e(Constants.TAG, "Recording is not active")
                 promise.resolve(null)
@@ -292,11 +316,11 @@ class AudioRecorderManager(
 
                 Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")
                 if (audioRecord != null && audioRecord!!.state == AudioRecord.STATE_INITIALIZED) {
-                    Log.d(Constants.TAG, "Stopping AudioRecord");
+                    Log.d(Constants.TAG, "Stopping AudioRecord")
                     audioRecord!!.stop()
                 }
             } catch (e: IllegalStateException) {
-                Log.e(Constants.TAG, "Error reading from AudioRecord", e);
+                Log.e(Constants.TAG, "Error reading from AudioRecord", e)
             } finally {
                 audioRecord?.release()
             }
@@ -308,12 +332,33 @@ class AudioRecorderManager(
                     "pcm_8bit" -> 1
                     "pcm_16bit" -> 2
                     "pcm_32bit" -> 4
-                    else -> 2 // Default to 2 bytes per sample if the encoding is not recognized
+                    else -> 2
                 }
-                // Calculate duration based on the data size and byte rate
                 val duration = if (byteRate > 0) (dataFileSize * 1000 / byteRate) else 0
 
-                // Create result bundle
+                // Create concat file list
+                val concatFile = File(filesDir, "concat_${streamUuid}.txt")
+                val chunks = chunkManager.getChunks()
+                concatFile.bufferedWriter().use { writer ->
+                    chunks.forEach { chunk ->
+                        writer.write("file '${chunk.absolutePath}'\n")
+                    }
+                }
+
+                // Concatenate chunks and convert to MP3
+                val outputMp3 = File(filesDir, "output_${streamUuid}.mp3")
+                val ffmpegCommand = "-f concat -safe 0 -i ${concatFile.absolutePath} " +
+                    "-c:a libmp3lame -q:a 0 -ar 44100 -ac 2 -b:a 320k " +
+                    "-y ${outputMp3.absolutePath}"
+
+                val session = FFmpegKit.execute(ffmpegCommand)
+                if (ReturnCode.isSuccess(session.returnCode)) {
+                    Log.d(Constants.TAG, "FFmpeg concatenation and conversion successful")
+                } else {
+                    Log.e(Constants.TAG, "FFmpeg concatenation failed: ${session.output}")
+                }
+
+                // Create result bundle with both WAV and MP3 files
                 val result = bundleOf(
                     "fileUri" to audioFile?.toURI().toString(),
                     "filename" to audioFile?.name,
@@ -323,19 +368,26 @@ class AudioRecorderManager(
                         "pcm_8bit" -> 8
                         "pcm_16bit" -> 16
                         "pcm_32bit" -> 32
-                        else -> 16 // Default to 16 if the encoding is not recognized
+                        else -> 16
                     },
                     "sampleRate" to recordingConfig.sampleRate,
                     "size" to fileSize,
-                    "mimeType" to mimeType
+                    "mimeType" to mimeType,
+                    "concatFileUri" to outputMp3.toURI().toString(),
+                    "concatFilename" to outputMp3.name,
+                    "concatDurationMs" to duration,
+                    "concatSize" to outputMp3.length(),
+                    "concatMimeType" to "audio/mp3"
                 )
                 promise.resolve(result)
 
-                // Reset the timing variables
+                // Clean up
                 isRecording.set(false)
                 isPaused.set(false)
                 totalRecordedTime = 0
                 pausedDuration = 0
+                chunkManager.clear()
+                concatFile.delete()
             } catch (e: Exception) {
                 Log.d(Constants.TAG, "Failed to stop recording", e)
                 promise.reject("STOP_FAILED", "Failed to stop recording", e)
@@ -490,7 +542,23 @@ class AudioRecorderManager(
     }
 
     private fun emitAudioData(audioData: ByteArray, length: Int) {
-        val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
+        val chunkFile = chunkManager.createChunkFile()
+        
+        // Write WAV header and audio data to chunk file
+        FileOutputStream(chunkFile).use { fos ->
+            audioFileHandler.writeWavHeader(
+                fos,
+                recordingConfig.sampleRate,
+                recordingConfig.channels,
+                when (recordingConfig.encoding) {
+                    "pcm_8bit" -> 8
+                    "pcm_16bit" -> 16
+                    "pcm_32bit" -> 32
+                    else -> 16
+                }
+            )
+            fos.write(audioData, 0, length)
+        }
 
         val fileSize = audioFile?.length() ?: 0
         val from = lastEmittedSize
@@ -500,18 +568,23 @@ class AudioRecorderManager(
         // Calculate position in milliseconds
         val positionInMs = (from * 1000) / (recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8)
 
+        // Calculate chunk duration in milliseconds
+        val chunkDuration = (length * 1000) / (recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8)
+
         mainHandler.post {
             try {
                 eventSender.sendExpoEvent(
                     Constants.AUDIO_EVENT_NAME, bundleOf(
                         "fileUri" to audioFile?.toURI().toString(),
                         "lastEmittedSize" to from,
-                        "encoded" to encodedBuffer,
                         "deltaSize" to length,
                         "position" to positionInMs,
                         "mimeType" to mimeType,
                         "totalSize" to fileSize,
-                        "streamUuid" to streamUuid
+                        "streamUuid" to streamUuid,
+                        "chunkFileUri" to chunkFile.toURI().toString(),
+                        "chunkFileSize" to chunkFile.length(),
+                        "chunkDuration" to chunkDuration
                     )
                 )
             } catch (e: Exception) {
