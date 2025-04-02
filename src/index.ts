@@ -51,14 +51,20 @@ export class ExpoPlayAudioStream {
 
     if (onAudioStream && typeof onAudioStream == "function") {
       subscription = addAudioEventListener(async (event: AudioEventPayload) => {
-        const { fileUri, deltaSize, totalSize, position, encoded, soundLevel } =
-          event;
-        if (!encoded) {
-          console.error(`[ExpoPlayAudioStream] Encoded audio data is missing`);
-          throw new Error("Encoded audio data is missing");
+        const {
+          fileUri,
+          deltaSize,
+          totalSize,
+          position,
+          chunkFileUri,
+          soundLevel,
+        } = event;
+        if (!chunkFileUri) {
+          console.error(`[ExpoPlayAudioStream] Chunk file URI is missing`);
+          throw new Error("Chunk file URI is missing");
         }
         onAudioStream?.({
-          data: encoded,
+          chunkFileUri,
           position,
           fileUri,
           eventDataSize: deltaSize,
@@ -266,17 +272,15 @@ export class ExpoPlayAudioStream {
               deltaSize,
               totalSize,
               position,
-              encoded,
+              chunkFileUri,
               soundLevel,
             } = event;
-            if (!encoded) {
-              console.error(
-                `[ExpoPlayAudioStream] Encoded audio data is missing`
-              );
-              throw new Error("Encoded audio data is missing");
+            if (!chunkFileUri) {
+              console.error(`[ExpoPlayAudioStream] Chunk file URI is missing`);
+              throw new Error("Chunk file URI is missing");
             }
             onAudioStream?.({
-              data: encoded,
+              chunkFileUri,
               position,
               fileUri,
               eventDataSize: deltaSize,
@@ -328,14 +332,21 @@ export class ExpoPlayAudioStream {
     onMicrophoneStream: (event: AudioDataEvent) => Promise<void>
   ): Subscription {
     return addAudioEventListener(async (event: AudioEventPayload) => {
-      const { fileUri, deltaSize, totalSize, position, encoded, soundLevel } =
-        event;
-      if (!encoded) {
-        console.error(`[ExpoPlayAudioStream] Encoded audio data is missing`);
-        throw new Error("Encoded audio data is missing");
+      const {
+        fileUri,
+        deltaSize,
+        totalSize,
+        position,
+        chunkFileUri,
+        soundLevel,
+      } = event;
+
+      if (!chunkFileUri) {
+        console.error(`[ExpoPlayAudioStream] Chunk file URI is missing`);
+        throw new Error("Chunk file URI is missing");
       }
       onMicrophoneStream?.({
-        data: encoded,
+        chunkFileUri,
         position,
         fileUri,
         eventDataSize: deltaSize,
@@ -418,7 +429,6 @@ export class ExpoPlayAudioStream {
   static toggleSilence() {
     ExpoPlayAudioStreamModule.toggleSilence();
   }
-
 }
 
 export {

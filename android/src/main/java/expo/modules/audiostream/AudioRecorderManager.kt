@@ -11,6 +11,9 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.os.bundleOf
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import expo.modules.kotlin.Promise
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -159,6 +162,8 @@ class AudioRecorderManager(
 
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
+
+        interval = recordingConfig.interval
 
         // Recalculate bufferSizeInBytes if the format has changed
         bufferSizeInBytes = AudioRecord.getMinBufferSize(
@@ -491,6 +496,17 @@ class AudioRecorderManager(
 
     private fun emitAudioData(audioData: ByteArray, length: Int) {
         val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
+        
+        // Create a cache file for the chunk
+        val chunkFile = File(filesDir, "chunk_${System.currentTimeMillis()}.wav")
+        try {
+            FileOutputStream(chunkFile).use { fos ->
+                fos.write(encodedBuffer.toByteArray())
+            }
+        } catch (e: Exception) {
+            Log.e(Constants.TAG, "Failed to write chunk file", e)
+            return
+        }
 
         val fileSize = audioFile?.length() ?: 0
         val from = lastEmittedSize
@@ -506,7 +522,7 @@ class AudioRecorderManager(
                     Constants.AUDIO_EVENT_NAME, bundleOf(
                         "fileUri" to audioFile?.toURI().toString(),
                         "lastEmittedSize" to from,
-                        "encoded" to encodedBuffer,
+                        "chunkFileUri" to chunkFile.toURI().toString(),
                         "deltaSize" to length,
                         "position" to positionInMs,
                         "mimeType" to mimeType,

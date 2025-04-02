@@ -399,30 +399,35 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
         guard let fileURL = manager.recordingFileURL,
               let settings = manager.recordingSettings else { return }
         
-        let encodedData = data.base64EncodedString()
+        // Create a cache file for this chunk
+        let cacheFileName = "chunk_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
+        let cacheFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(cacheFileName)
         
-        // Assuming `lastEmittedSize` and `streamUuid` are tracked within `AudioStreamManager`
-        let deltaSize = data.count  // This needs to be calculated based on what was last sent if using chunks
-        let fileSize = totalDataSize  // Total data size in bytes
-        
-        // Calculate the position in milliseconds using the lastEmittedSize
-        let sampleRate = settings.sampleRate
-        let channels = Double(settings.numberOfChannels)
-        let bitDepth = Double(settings.bitDepth)
-        let position = Int((Double(manager.lastEmittedSize) / (sampleRate * channels * (bitDepth / 8))) * 1000)
-        
-        // Construct the event payload similar to Android
-        let eventBody: [String: Any] = [
-            "fileUri": fileURL.absoluteString,
-            "lastEmittedSize": manager.lastEmittedSize,  // Needs to be maintained within AudioStreamManager
-            "position": position, // Add position of the chunk in ms since
-            "encoded": encodedData,
-            "deltaSize": deltaSize,
-            "totalSize": fileSize,
-            "mimeType": manager.mimeType
-        ]
-        // Emit the event to JavaScript
-        sendEvent(audioDataEvent, eventBody)
+        do {
+            // Write the audio data to cache file
+            try data.write(to: cacheFileURL)
+            
+            // Calculate the position in milliseconds
+            let sampleRate = settings.sampleRate
+            let channels = Double(settings.numberOfChannels)
+            let bitDepth = Double(settings.bitDepth)
+            let position = Int((Double(manager.lastEmittedSize) / (sampleRate * channels * (bitDepth / 8))) * 1000)
+            
+            // Construct the event payload with chunkFileUri instead of encoded data
+            let eventBody: [String: Any] = [
+                "fileUri": fileURL.absoluteString,
+                "lastEmittedSize": manager.lastEmittedSize,
+                "position": position,
+                "chunkFileUri": cacheFileURL.absoluteString,
+                "deltaSize": data.count,
+                "totalSize": totalDataSize,
+                "mimeType": manager.mimeType
+            ]
+            // Emit the event to JavaScript
+            sendEvent(audioDataEvent, eventBody)
+        } catch {
+            print("Error writing audio chunk to cache file:", error.localizedDescription)
+        }
     }
     
     /// Checks microphone permission and calls the completion handler with the result.
@@ -483,20 +488,30 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
     }
     
     func onMicrophoneData(_ microphoneData: Data, _ soundLevel: Float?) {
-        let encodedData = microphoneData.base64EncodedString()
-        // Construct the event payload similar to Android
-        let eventBody: [String: Any] = [
-            "fileUri": "",
-            "lastEmittedSize": 0,
-            "position": 0, // Add position of the chunk in ms since
-            "encoded": encodedData,
-            "deltaSize": 0,
-            "totalSize": 0,
-            "mimeType": "",
-            "soundLevel": soundLevel ?? -160
-        ]
-        // Emit the event to JavaScript
-        sendEvent(audioDataEvent, eventBody)
+        // Create a cache file for this chunk
+        let cacheFileName = "chunk_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
+        let cacheFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(cacheFileName)
+        
+        do {
+            // Write the audio data to cache file
+            try microphoneData.write(to: cacheFileURL)
+            
+            // Construct the event payload with chunkFileUri instead of encoded data
+            let eventBody: [String: Any] = [
+                "fileUri": "",
+                "lastEmittedSize": 0,
+                "position": 0,
+                "chunkFileUri": cacheFileURL.absoluteString,
+                "deltaSize": 0,
+                "totalSize": 0,
+                "mimeType": "",
+                "soundLevel": soundLevel ?? -160
+            ]
+            // Emit the event to JavaScript
+            sendEvent(audioDataEvent, eventBody)
+        } catch {
+            print("Error writing microphone data to cache file:", error.localizedDescription)
+        }
     }
     
     func onDeviceReconnected(_ reason: AVAudioSession.RouteChangeReason) {
