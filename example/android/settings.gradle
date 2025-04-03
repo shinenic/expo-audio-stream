@@ -1,4 +1,4 @@
-rootProject.name = 'expo-audio-stream-example'
+rootProject.name = 'Demo expo audio recording stream'
 
 dependencyResolutionManagement {
   versionCatalogs {

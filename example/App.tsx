@@ -1,157 +1,151 @@
-import { Button, Platform, StyleSheet, Text, View } from "react-native";
-import { ExpoPlayAudioStream } from "@mykin-ai/expo-audio-stream";
-import { useEffect, useRef } from "react";
-import { sampleA } from "./samples/sample-a";
-import { sampleB } from "./samples/sample-b";
-import { sampleC } from "./samples/sample-c";
 import {
-  AudioDataEvent,
-} from "@mykin-ai/expo-audio-stream/types";
-import { Subscription } from "expo-modules-core";
-import { Audio } from 'expo-av';
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useState } from "react";
+import Slider from "@react-native-community/slider";
+import CustomRecorder from "./components/CustomRecorder";
+import ExpoAVRecorder from "./components/ExpoAVRecorder";
 
-const ANDROID_SAMPLE_RATE = 16000;
-const IOS_SAMPLE_RATE = 48000;
-const CHANNELS = 1;
-const ENCODING = "pcm_16bit";
-const RECORDING_INTERVAL = 100;
-
-const turnId1 = 'turnId1';
-const turnId2 = 'turnId2';
-
+const colors = ["#ff6b6b", "#48dbfb", "#1dd1a1", "#feca57", "#ff9ff3"] as const;
 
 export default function App() {
-
-
-  const eventListenerSubscriptionRef = useRef<Subscription | undefined>(undefined);
-
-  const onAudioCallback = async (audio: AudioDataEvent) => {
-    console.log(audio.data.slice(0, 100));
-  };
-
-  const playEventsListenerSubscriptionRef = useRef<Subscription | undefined>(undefined);
-
-  useEffect(() => {
-    playEventsListenerSubscriptionRef.current = ExpoPlayAudioStream.subscribeToSoundChunkPlayed(async (event) => {
-      console.log(event);
-    });
-
-    return () => {
-      if (playEventsListenerSubscriptionRef.current) {
-        playEventsListenerSubscriptionRef.current.remove();
-        playEventsListenerSubscriptionRef.current = undefined;
-      }
-    }
-  }, []);
+  const [sliderValue, setSliderValue] = useState<number>(50);
+  const [textValue, setTextValue] = useState<string>("");
+  const [counter, setCounter] = useState<number>(0);
+  const [colorIndex, setColorIndex] = useState<number>(0);
 
   return (
-    <View style={styles.container}>
-      <Text>hi</Text>
-      <Button
-        onPress={async () => {
-          await ExpoPlayAudioStream.playAudio(sampleB, turnId1);
-        }}
-        title="Play sample B"
-      />
-      <View style={{ height: 10, marginBottom: 10 }}>
-        <Text>====================</Text>
+    <ScrollView contentContainerStyle={styles.recorderContainer}>
+      <Text style={styles.title}>Audio Recording Demo</Text>
+
+      <View style={styles.interactiveSection}>
+        <Text style={styles.sectionTitle}>Interactive UI Elements</Text>
+
+        <Text>Slider Value: {sliderValue.toFixed(1)}</Text>
+        <Slider
+          style={styles.slider}
+          minimumValue={0}
+          maximumValue={100}
+          value={sliderValue}
+          onValueChange={setSliderValue}
+          minimumTrackTintColor="#007AFF"
+          maximumTrackTintColor="#000000"
+        />
+
+        <TextInput
+          style={styles.textInput}
+          placeholder="Type something while recording..."
+          value={textValue}
+          onChangeText={setTextValue}
+        />
+
+        <View style={styles.counterContainer}>
+          <TouchableOpacity
+            style={styles.counterButton}
+            onPress={() => setCounter((prev) => prev - 1)}
+          >
+            <Text style={styles.buttonText}>-</Text>
+          </TouchableOpacity>
+          <Text style={styles.counterText}>{counter}</Text>
+          <TouchableOpacity
+            style={styles.counterButton}
+            onPress={() => setCounter((prev) => prev + 1)}
+          >
+            <Text style={styles.buttonText}>+</Text>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity
+          style={[styles.colorButton, { backgroundColor: colors[colorIndex] }]}
+          onPress={() => setColorIndex((colorIndex + 1) % colors.length)}
+        >
+          <Text style={styles.colorButtonText}>Tap to change color</Text>
+        </TouchableOpacity>
       </View>
-      <Button
-        onPress={async () => {
-          await ExpoPlayAudioStream.pauseAudio();
-        }}
-        title="Pause Audio"
-      />
-      <View style={{ height: 10, marginBottom: 10 }}>
-        <Text>====================</Text>
-      </View>
-      <Button
-        onPress={async () => {
-          await ExpoPlayAudioStream.playSound(sampleA, turnId2);
-        }}
-        title="Play sample A"
-      />
-      <View style={{ height: 10, marginBottom: 10 }}>
-        <Text>====================</Text>
-      </View>
-      <Button
-        onPress={async () => {
-          await ExpoPlayAudioStream.playWav(sampleC);
-        }}
-        title="Play WAV fragment"
-      />
-       <View style={{ height: 10, marginBottom: 10 }}>
-        <Text>====================</Text>
-      </View>
-      <Button
-        onPress={async () => {
-          if (!isMicrophonePermissionGranted()) {
-            const permissionGranted = await requestMicrophonePermission();
-            if (!permissionGranted) {
-              return;
-            }
-          }
-          const sampleRate =
-            Platform.OS === "ios" ? IOS_SAMPLE_RATE : ANDROID_SAMPLE_RATE;
-          const { recordingResult, subscription } = await ExpoPlayAudioStream.startMicrophone({
-            interval: RECORDING_INTERVAL,
-            sampleRate,
-            channels: CHANNELS,
-            encoding: ENCODING,
-            onAudioStream: onAudioCallback,
-          });
-          console.log(JSON.stringify(recordingResult, null, 2 ));
-          eventListenerSubscriptionRef.current = subscription;
-        }}
-        title="Start Recording"
-      />
-       <View style={{ height: 10, marginBottom: 10 }}>
-        <Text>====================</Text>
-      </View>
-      <Button
-        onPress={async () => {
-          
-          await ExpoPlayAudioStream.stopMicrophone();
-          if (eventListenerSubscriptionRef.current) {
-            eventListenerSubscriptionRef.current.remove();
-            eventListenerSubscriptionRef.current = undefined;
-          }
-        }}
-        title="Stop Recording"
-      />
-       <View style={{ height: 10, marginBottom: 10 }}>
-        <Text>====================</Text>
-      </View>
-      <Button
-        onPress={async () => {
-          await ExpoPlayAudioStream.clearPlaybackQueueByTurnId(turnId1);
-        }}
-        title="Clear turnId1"
-      />
-    </View>
+
+      <CustomRecorder />
+      <ExpoAVRecorder />
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#fff",
+  title: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 20,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  interactiveSection: {
+    width: "80%",
+    marginBottom: 20,
+    padding: 15,
+    backgroundColor: "#e3f2fd",
+    borderRadius: 10,
     alignItems: "center",
+  },
+  slider: {
+    width: "90%",
+    height: 40,
+    marginVertical: 10,
+  },
+  textInput: {
+    width: "90%",
+    height: 40,
+    borderColor: "#ddd",
+    borderWidth: 1,
+    borderRadius: 5,
+    padding: 10,
+    marginVertical: 10,
+  },
+  counterContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginVertical: 10,
+  },
+  counterButton: {
+    width: 40,
+    height: 40,
+    backgroundColor: "#007AFF",
+    borderRadius: 20,
     justifyContent: "center",
+    alignItems: "center",
+    marginHorizontal: 10,
+  },
+  buttonText: {
+    color: "white",
+    fontSize: 20,
+    fontWeight: "bold",
+  },
+  counterText: {
+    fontSize: 20,
+    width: 40,
+    textAlign: "center",
+  },
+  colorButton: {
+    width: "90%",
+    height: 50,
+    borderRadius: 8,
+    justifyContent: "center",
+    alignItems: "center",
+    marginVertical: 10,
+  },
+  colorButtonText: {
+    color: "white",
+    fontWeight: "bold",
+  },
+  recorderContainer: {
+    width: "100%",
+    alignItems: "center",
   },
 });
-
-export const requestMicrophonePermission = async (): Promise<boolean> => {
-  const { granted } = await Audio.getPermissionsAsync();
-  let permissionGranted = granted;
-  if (!permissionGranted) {
-    const { granted: grantedPermission } = await Audio.requestPermissionsAsync();
-    permissionGranted = grantedPermission;
-  }
-  return permissionGranted;
-};
-
-export const isMicrophonePermissionGranted = async (): Promise<boolean> => {
-  const { granted } = await Audio.getPermissionsAsync();
-  return granted;
-};

@@ -11,6 +11,9 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.os.bundleOf
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import expo.modules.kotlin.Promise
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -159,6 +162,8 @@ class AudioRecorderManager(
 
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
+
+        interval = recordingConfig.interval
 
         // Recalculate bufferSizeInBytes if the format has changed
         bufferSizeInBytes = AudioRecord.getMinBufferSize(

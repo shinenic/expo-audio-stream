@@ -60,3 +60,7 @@ yarn-error.log
 /example/ios/*
 /example/android/*
 example/ios/expoaudiostreamexample.xcodeproj/project.pbxproj
+
+# Uploads
+uploads/
+sessions/

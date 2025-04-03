@@ -418,7 +418,6 @@ export class ExpoPlayAudioStream {
   static toggleSilence() {
     ExpoPlayAudioStreamModule.toggleSilence();
   }
-
 }
 
 export {
