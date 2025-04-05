@@ -4353,6 +4353,7 @@ __metadata:
     expo-av: "npm:~13.10.6"
     expo-document-picker: "npm:~11.10.1"
     expo-file-system: "npm:~16.0.9"
+    expo-sharing: "npm:~11.10.0"
     ffmpeg-kit-react-native: "npm:^6.0.2"
     react: "npm:18.2.0"
     react-native: "npm:0.73.6"
@@ -4453,6 +4454,15 @@ __metadata:
   dependencies:
     invariant: "npm:^2.2.4"
   checksum: 10c0/7c2a37f9856a476252b904f3e71b90cb1a555ffd6947428d2d855e4340d46743b59dd4074e4bb89634661f237f47022f10cc64b1508aa8b312c5c1ecdea47599
+  languageName: node
+  linkType: hard
+
+"expo-sharing@npm:~11.10.0":
+  version: 11.10.0
+  resolution: "expo-sharing@npm:11.10.0"
+  peerDependencies:
+    expo: "*"
+  checksum: 10c0/af26c5a78351d0ac8fe47a41283a486af1b287c227396103eebb4a59d4d22cec530f80d61c0eaaf2bd2a64f0229a11a5f18a844bc6b8df2e209bceea9dad4e7b
   languageName: node
   linkType: hard
 

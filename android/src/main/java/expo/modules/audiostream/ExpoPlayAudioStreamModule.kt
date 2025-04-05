@@ -179,7 +179,7 @@ class ExpoPlayAudioStreamModule : Module(), EventSender {
         val permissionUtils = PermissionUtils(androidContext)
         val audioEncoder = AudioDataEncoder()
         audioRecorderManager =
-            AudioRecorderManager(androidContext.filesDir, permissionUtils, audioEncoder, this)
+            AudioRecorderManager(androidContext.filesDir, permissionUtils, audioEncoder, this, androidContext)
     }
 
     private fun initializePlaybackManager() {

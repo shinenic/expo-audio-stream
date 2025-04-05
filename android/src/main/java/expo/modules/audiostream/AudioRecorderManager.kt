@@ -19,6 +19,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
 
@@ -26,7 +27,8 @@ class AudioRecorderManager(
     private val filesDir: File,
     private val permissionUtils: PermissionUtils,
     private val audioDataEncoder: AudioDataEncoder,
-    private val eventSender: EventSender
+    private val eventSender: EventSender,
+    private val context: android.content.Context
 ) {
     private var audioRecord: AudioRecord? = null
     private var bufferSizeInBytes = 0
@@ -34,6 +36,9 @@ class AudioRecorderManager(
     private val isPaused = AtomicBoolean(false)
     private var streamUuid: String? = null
     private var audioFile: File? = null
+    private var webmFile: File? = null
+    private var ffmpegPipe: String? = null
+    private var pipeFos: FileOutputStream? = null
     private var recordingThread: Thread? = null
     private var recordingStartTime: Long = 0
     private var totalRecordedTime: Long = 0
@@ -148,21 +153,6 @@ class AudioRecorderManager(
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
 
-
-        // Check if selected audio format is supported
-        if (!isAudioFormatSupported(tempRecordingConfig.sampleRate, tempRecordingConfig.channels, audioFormat)) {
-            Log.e(Constants.TAG, "Selected audio format not supported, falling back to 16-bit PCM")
-            audioFormat = AudioFormat.ENCODING_PCM_16BIT
-            if (!isAudioFormatSupported(tempRecordingConfig.sampleRate, tempRecordingConfig.channels, audioFormat)) {
-                promise.reject("INITIALIZATION_FAILED", "Failed to initialize audio recorder with any supported format", null)
-                return
-            }
-            tempRecordingConfig = tempRecordingConfig.copy(encoding = "pcm_16bit")
-        }
-
-        // Update recordingConfig with potentially new encoding
-        recordingConfig = tempRecordingConfig
-
         interval = recordingConfig.interval
 
         // Recalculate bufferSizeInBytes if the format has changed
@@ -202,6 +192,7 @@ class AudioRecorderManager(
 
         streamUuid = java.util.UUID.randomUUID().toString()
         audioFile = File(filesDir, "audio_${streamUuid}.${fileExtension}")
+        webmFile = File(filesDir, "audio_${streamUuid}.webm")
 
         try {
             FileOutputStream(audioFile, true).use { fos ->
@@ -217,6 +208,59 @@ class AudioRecorderManager(
             return
         }
 
+        // Set up FFmpeg pipe for WebM conversion
+        try {
+            // 1. Create pipe
+            ffmpegPipe = FFmpegKitConfig.registerNewFFmpegPipe(context)
+            Log.d(Constants.TAG, "Created FFmpeg pipe: $ffmpegPipe")
+            
+            // 2. Build FFmpeg command to encode to WebM
+            val bitDepth = when (recordingConfig.encoding) {
+                "pcm_8bit" -> 8
+                "pcm_16bit" -> 16
+                "pcm_32bit" -> 32
+                else -> 16
+            }
+            
+            val pcmFormat = when (bitDepth) {
+                8 -> "u8"
+                16 -> "s16le"
+                32 -> "f32le"
+                else -> "s16le"
+            }
+            
+            // Safely get the webmFile path
+            val webmFilePath = webmFile?.absolutePath ?: run {
+                Log.e(Constants.TAG, "WebM file path is null")
+                throw IOException("WebM file path is null")
+            }
+            
+            val ffmpegCommand = "-f $pcmFormat -ar ${recordingConfig.sampleRate} -ac ${recordingConfig.channels} " +
+                    "-i $ffmpegPipe -c:a libopus -application lowdelay -b:a 128k -flush_packets 1 -packet_size 1024 $webmFilePath"
+            
+            // 3. Execute FFmpeg command
+            FFmpegKit.executeAsync(ffmpegCommand, { session ->
+                val returnCode = session.returnCode
+                Log.d(Constants.TAG, "FFmpeg session completed with return code: $returnCode")
+                if (ReturnCode.isSuccess(returnCode)) {
+                    Log.d(Constants.TAG, "WebM conversion successful")
+                } else if (ReturnCode.isCancel(returnCode)) {
+                    Log.d(Constants.TAG, "WebM conversion canceled")
+                } else {
+                    Log.e(Constants.TAG, "WebM conversion failed: ${session.failStackTrace}")
+                }
+            }, { log ->
+                Log.d(Constants.TAG, "FFmpeg log: ${log.message}")
+            }, null)
+            
+            // Open pipe for writing
+            pipeFos = ffmpegPipe?.let { FileOutputStream(it) }
+            
+        } catch (e: Exception) {
+            Log.e(Constants.TAG, "Failed to set up FFmpeg pipe", e)
+            // Continue even if WebM setup fails
+        }
+
         audioRecord?.startRecording()
         isPaused.set(false)
         isRecording.set(true)
@@ -230,6 +274,7 @@ class AudioRecorderManager(
 
         val result = bundleOf(
             "fileUri" to audioFile?.toURI().toString(),
+            "webmFileUri" to webmFile?.toURI().toString(),
             "channels" to recordingConfig.channels,
             "bitDepth" to when (recordingConfig.encoding) {
                 "pcm_8bit" -> 8
@@ -293,12 +338,26 @@ class AudioRecorderManager(
                 Log.d(Constants.TAG, "Last Read $bytesRead bytes")
                 if (bytesRead > 0) {
                     emitAudioData(audioData, bytesRead)
+                    // Write final data to pipe
+                    pipeFos?.write(audioData, 0, bytesRead)
+                    pipeFos?.flush()
                 }
 
                 Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")
                 if (audioRecord != null && audioRecord!!.state == AudioRecord.STATE_INITIALIZED) {
                     Log.d(Constants.TAG, "Stopping AudioRecord");
                     audioRecord!!.stop()
+                }
+                
+                // Close the pipe
+                try {
+                    pipeFos?.close()
+                    ffmpegPipe?.let {
+                        FFmpegKitConfig.closeFFmpegPipe(it)
+                        Log.d(Constants.TAG, "Closed FFmpeg pipe: $it")
+                    }
+                } catch (e: Exception) {
+                    Log.e(Constants.TAG, "Error closing FFmpeg pipe", e)
                 }
             } catch (e: IllegalStateException) {
                 Log.e(Constants.TAG, "Error reading from AudioRecord", e);
@@ -321,6 +380,7 @@ class AudioRecorderManager(
                 // Create result bundle
                 val result = bundleOf(
                     "fileUri" to audioFile?.toURI().toString(),
+                    "webmFileUri" to webmFile?.toURI().toString(),
                     "filename" to audioFile?.name,
                     "durationMs" to duration,
                     "channels" to recordingConfig.channels,
@@ -474,6 +534,14 @@ class AudioRecorderManager(
                     totalDataSize += bytesRead
                     accumulatedAudioData.write(audioData, 0, bytesRead)
 
+                    // Write data to FFmpeg pipe
+                    try {
+                        pipeFos?.write(audioData, 0, bytesRead)
+                        pipeFos?.flush()
+                    } catch (e: Exception) {
+                        Log.e(Constants.TAG, "Error writing to FFmpeg pipe", e)
+                    }
+
                     // Emit audio data at defined intervals
                     if (SystemClock.elapsedRealtime() - lastEmitTime >= interval) {
                         emitAudioData(
@@ -510,6 +578,7 @@ class AudioRecorderManager(
                 eventSender.sendExpoEvent(
                     Constants.AUDIO_EVENT_NAME, bundleOf(
                         "fileUri" to audioFile?.toURI().toString(),
+                        "webmFileUri" to webmFile?.toURI().toString(),
                         "lastEmittedSize" to from,
                         "encoded" to encodedBuffer,
                         "deltaSize" to length,
