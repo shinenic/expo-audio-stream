@@ -1,5 +1,6 @@
 import AVFoundation
 import ExpoModulesCore
+import ffmpegkit
 
 
 class Microphone {
@@ -24,6 +25,12 @@ class Microphone {
     
     private var startTime: Date?
     private var pauseStartTime: Date?
+    
+    // FFmpeg pipe related properties
+    private var ffmpegPipe: String?
+    private var ffmpegSession: FFmpegSession?
+    private var ffmpegPipeFileHandle: FileHandle?
+    private var webmFileUri: String?
     
 
     private var inittedAudioSession = false
@@ -55,7 +62,7 @@ class Microphone {
             if isRecording {
                 stopRecording(resolver: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    guard let self = self, let settings = self.recordingSettings else { return }
+                    guard let self = self else { return }
                     
                     _ = startRecording(settings: self.recordingSettings!, intervalMilliseconds: 100)
                 }
@@ -70,6 +77,93 @@ class Microphone {
     func toggleSilence() {
         Logger.debug("[Microphone] toggleSilence")
         self.isSilent = !self.isSilent
+    }
+    
+    /// Creates and starts an FFmpeg session to encode raw PCM data to WebM
+    /// - Parameter settings: Recording settings for the audio
+    /// - Returns: The URI of the WebM file, or nil if setup failed
+    private func setupFFmpegPipe(settings: RecordingSettings) -> String? {
+        // Create a unique filename for the WebM output
+        let fileManager = FileManager.default
+        let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let webmFilename = UUID().uuidString + ".webm"
+        let webmFileURL = documentsDirectory.appendingPathComponent(webmFilename)
+        
+        // Register a new FFmpeg pipe
+        guard let pipe = FFmpegKitConfig.registerNewFFmpegPipe() else {
+            Logger.debug("[Microphone] Failed to create FFmpeg pipe")
+            return nil
+        }
+        
+        self.ffmpegPipe = pipe
+        
+        // Build the FFmpeg command
+        // For WebM format with Opus codec, commonly used for web audio
+        let sampleRate = Int(settings.sampleRate)
+        let channels = settings.numberOfChannels
+        let bitDepth = settings.bitDepth
+        
+        let format: String
+        switch bitDepth {
+        case 8:
+            format = "u8"
+        case 16:
+            format = "s16le"
+        case 32:
+            format = "s32le"
+        default:
+            format = "s16le" // Default to 16-bit
+        }
+        
+        // Construct FFmpeg command to convert raw PCM to WebM with Opus codec
+        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a libopus -b:a 128k \"\(webmFileURL.path)\""
+        
+        Logger.debug("[Microphone] Starting FFmpeg with command: \(ffmpegCommand)")
+        
+        // Execute FFmpeg command asynchronously
+        ffmpegSession = FFmpegKit.executeAsync(ffmpegCommand) { session in
+            if let returnCode = session?.getReturnCode(), returnCode.isValueSuccess() {
+                Logger.debug("[Microphone] FFmpeg process completed successfully")
+            } else {
+                Logger.debug("[Microphone] FFmpeg process failed: \(session?.getFailStackTrace() ?? "Unknown error")")
+            }
+        } withLogCallback: { log in
+            Logger.debug("[Microphone] FFmpeg log: \(log?.getMessage() ?? "")")
+        } withStatisticsCallback: { statistics in
+            // Handle statistics if needed
+        }
+        
+        // Open the pipe for writing
+        self.ffmpegPipeFileHandle = FileHandle(forWritingAtPath: pipe)
+        if self.ffmpegPipeFileHandle == nil {
+            Logger.debug("[Microphone] Failed to open pipe for writing")
+            return nil
+        }
+        
+        // Return the WebM file URI
+        webmFileUri = webmFileURL.absoluteString
+        return webmFileURL.absoluteString
+    }
+    
+    /// Closes the FFmpeg pipe and releases resources
+    private func closeFFmpegPipe() {
+        if let pipe = ffmpegPipe {
+            // Close the file handle first
+            ffmpegPipeFileHandle?.closeFile()
+            ffmpegPipeFileHandle = nil
+            
+            // Close the pipe
+            FFmpegKitConfig.closeFFmpegPipe(pipe)
+            ffmpegPipe = nil
+            Logger.debug("[Microphone] FFmpeg pipe closed")
+        }
+        
+        // Cancel FFmpeg session if it's still running
+        if let session = ffmpegSession, session.getState() != .completed && session.getState() != .failed {
+            FFmpegKit.cancel(session.getId())
+            Logger.debug("[Microphone] FFmpeg session cancelled")
+        }
+        ffmpegSession = nil
     }
     
     func startRecording(settings: RecordingSettings, intervalMilliseconds: Int) -> StartRecordingResult? {
@@ -116,6 +210,9 @@ class Microphone {
         
         recordingSettings = newSettings  // Update the class property with the new settings
         
+        // Set up FFmpeg pipe for WebM recording
+        let webmUri = setupFFmpegPipe(settings: newSettings)
+        
         // Correct the format to use 16-bit integer (PCM)
         guard let audioFormat = AVAudioFormat(commonFormat: commonFormat, sampleRate: newSettings.sampleRate, channels: UInt32(newSettings.numberOfChannels), interleaved: true) else {
             Logger.debug("Error: Failed to create audio format with the specified bit depth.")
@@ -139,6 +236,7 @@ class Microphone {
             Logger.debug("Debug: Recording started successfully.")
             return StartRecordingResult(
                 fileUri: "",
+                webmFileUri: webmUri,
                 mimeType: mimeType,
                 channels: settings.numberOfChannels,
                 bitDepth: settings.bitDepth,
@@ -158,10 +256,15 @@ class Microphone {
             }
             return
         }
+        
+        // Close FFmpeg pipe before stopping recording
+        closeFFmpegPipe()
+        
         self.isRecording = false
         self.isVoiceProcessingEnabled = false
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
+        
         if let promiseResolver = promise {
             promiseResolver.resolve(nil)
         }
@@ -211,6 +314,12 @@ class Microphone {
                     ? Data(repeating: 0, count:
                             Int(finalBuffer.frameCapacity) * Int(finalBuffer.format.streamDescription.pointee.mBytesPerFrame))
                     : Data(bytes: bufferData, count: Int(audioData.mDataByteSize))
+        
+        // Write data to FFmpeg pipe if available
+        if let fileHandle = ffmpegPipeFileHandle {
+            fileHandle.write(data)
+        }
+        
         // Accumulate new data
         accumulatedData.append(data)
         totalDataSize += Int64(data.count)

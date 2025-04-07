@@ -54,11 +54,7 @@ class AudioSessionManager {
     weak var delegate: AudioStreamManagerDelegate?  // Define the delegate here
 
     init() {
-        do {
-            NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange), name: AVAudioSession.routeChangeNotification, object: nil)
-        } catch {
-            print("Failed to init")
-        }
+        NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange), name: AVAudioSession.routeChangeNotification, object: nil)
     }
     
     /// Handles audio session interruptions.

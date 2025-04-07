@@ -171,9 +171,11 @@ export default function CustomRecorder() {
       // Add a small delay before playing to ensure file is ready
       await new Promise((resolve) => setTimeout(resolve, 500));
 
+      console.log({ uri });
       // Create and play the new sound
       const { sound: newSound } = await Audio.Sound.createAsync({
-        uri: uri,
+        // uri: `https://github.com/michaelmob/WebMCam/raw/refs/heads/master/Preview/example-audio.webm`,
+        uri,
       });
       setSound(newSound);
       await newSound.playAsync();
@@ -198,7 +200,8 @@ export default function CustomRecorder() {
         if (!uri.startsWith(FileSystem.cacheDirectory!)) {
           const fileInfo = await FileSystem.getInfoAsync(uri);
           if (fileInfo.exists) {
-            const fileExtension = uri.endsWith(".webm") ? "webm" : "wav";
+            // const fileExtension = uri.endsWith(".webm") ? "webm" : "wav";
+            const fileExtension = uri.split(".").pop();
             const fileName = `share-audio-${Date.now()}.${fileExtension}`;
             const destinationUri = `${FileSystem.cacheDirectory}${fileName}`;
 

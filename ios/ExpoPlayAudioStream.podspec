@@ -16,8 +16,10 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.dependency 'ExpoModulesCore'
-
-  # Swift/Objective-C compatibility
+  
+  # Use FFmpegKit from main spec source with tag-based reference
+  s.dependency 'ffmpeg-kit-ios-audio'
+  
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'SWIFT_COMPILATION_MODE' => 'wholemodule'

@@ -25,7 +25,9 @@ PODS:
     - ReactCommon/turbomodule/core
   - ExpoPlayAudioStream (0.2.23):
     - ExpoModulesCore
-    - ffmpeg-kit-ios-audio (~> 6.0)
+    - ffmpeg-kit-ios-audio
+  - ExpoSharing (11.10.0):
+    - ExpoModulesCore
   - FBLazyVector (0.73.6)
   - FBReactNativeSpec (0.73.6):
     - RCT-Folly (= 2022.05.16.00)
@@ -1104,6 +1106,7 @@ DEPENDENCIES:
   - ExpoKeepAwake (from `../node_modules/expo-keep-awake/ios`)
   - ExpoModulesCore (from `../node_modules/expo-modules-core`)
   - ExpoPlayAudioStream (from `../../ios`)
+  - ExpoSharing (from `../node_modules/expo-sharing/ios`)
   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
   - FBReactNativeSpec (from `../node_modules/react-native/React/FBReactNativeSpec`)
   - glog (from `../node_modules/react-native/third-party-podspecs/glog.podspec`)
@@ -1188,6 +1191,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-modules-core"
   ExpoPlayAudioStream:
     :path: "../../ios"
+  ExpoSharing:
+    :path: "../node_modules/expo-sharing/ios"
   FBLazyVector:
     :path: "../node_modules/react-native/Libraries/FBLazyVector"
   FBReactNativeSpec:
@@ -1299,7 +1304,8 @@ SPEC CHECKSUMS:
   ExpoFileSystem: df58e1eb2a4d6f1006a1ca70bddfbbf63e52fa4f
   ExpoKeepAwake: 520c6c05a0d3cd54f37f56da93bd63fe8e17ed1a
   ExpoModulesCore: 651f8ae792d6a1cd1c3428a888441978008abdaf
-  ExpoPlayAudioStream: 4653996730201fafdc2bf0a9282fe41416360fc0
+  ExpoPlayAudioStream: cc3dbebffa26fc38bd88780c8ab630ee573dbc43
+  ExpoSharing: 2537ddc516138bb6d8eb536ff7055e370485f4d1
   FBLazyVector: f64d1e2ea739b4d8f7e4740cde18089cd97fe864
   FBReactNativeSpec: 9f2b8b243131565335437dba74923a8d3015e780
   ffmpeg-kit-ios-audio: c013c6a68e822f7584f511931ad98e9a2040f23a

@@ -35,7 +35,6 @@ class AudioRecorderManager(
     private var isRecording = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
     private var streamUuid: String? = null
-    private var audioFile: File? = null
     private var webmFile: File? = null
     private var ffmpegPipe: String? = null
     private var pipeFos: FileOutputStream? = null
@@ -51,6 +50,8 @@ class AudioRecorderManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioRecordLock = Any()
     private var audioFileHandler: AudioFileHandler = AudioFileHandler(filesDir)
+    // Buffer to hold accumulated PCM data between emissions
+    private val pcmBuffer = ByteArrayOutputStream()
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/wav"
@@ -97,21 +98,17 @@ class AudioRecorderManager(
         }
 
         // Set encoding and file extension
-        var fileExtension = ".wav"
         audioFormat = when (tempRecordingConfig.encoding) {
             "pcm_8bit" -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_PCM_8BIT
             }
             "pcm_16bit" -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_PCM_16BIT
             }
             "pcm_32bit" -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_PCM_FLOAT
             }
             "opus" -> {
@@ -123,18 +120,15 @@ class AudioRecorderManager(
                     )
                     return
                 }
-                fileExtension = "opus"
                 mimeType = "audio/opus"
                 AudioFormat.ENCODING_OPUS
             }
             "aac_lc" -> {
-                fileExtension = "aac"
                 mimeType = "audio/aac"
                 AudioFormat.ENCODING_AAC_LC
             }
             else -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_DEFAULT
             }
         }
@@ -191,22 +185,10 @@ class AudioRecorderManager(
         }
 
         streamUuid = java.util.UUID.randomUUID().toString()
-        audioFile = File(filesDir, "audio_${streamUuid}.${fileExtension}")
         webmFile = File(filesDir, "audio_${streamUuid}.webm")
-
-        try {
-            FileOutputStream(audioFile, true).use { fos ->
-                audioFileHandler.writeWavHeader(fos, recordingConfig.sampleRate, recordingConfig.channels, when (recordingConfig.encoding) {
-                    "pcm_8bit" -> 8
-                    "pcm_16bit" -> 16
-                    "pcm_32bit" -> 32
-                    else -> 16 // Default to 16 if the encoding is not recognized
-                })
-            }
-        } catch (e: IOException) {
-            promise.reject("FILE_CREATION_FAILED", "Failed to create the audio file", e)
-            return
-        }
+        
+        // Reset the PCM buffer
+        pcmBuffer.reset()
 
         // Set up FFmpeg pipe for WebM conversion
         try {
@@ -266,14 +248,12 @@ class AudioRecorderManager(
         isRecording.set(true)
 
         if (!isPaused.get()) {
-            recordingStartTime =
-                System.currentTimeMillis() // Only reset start time if it's not a resume
+            recordingStartTime = System.currentTimeMillis() // Only reset start time if it's not a resume
         }
 
         recordingThread = Thread { recordingProcess() }.apply { start() }
 
         val result = bundleOf(
-            "fileUri" to audioFile?.toURI().toString(),
             "webmFileUri" to webmFile?.toURI().toString(),
             "channels" to recordingConfig.channels,
             "bitDepth" to when (recordingConfig.encoding) {
@@ -366,22 +346,19 @@ class AudioRecorderManager(
             }
 
             try {
-                val fileSize = audioFile?.length() ?: 0
-                val dataFileSize = fileSize - 44  // Subtract header size
+                // Calculate duration based on total data size and byte rate
                 val byteRate = recordingConfig.sampleRate * recordingConfig.channels * when (recordingConfig.encoding) {
                     "pcm_8bit" -> 1
                     "pcm_16bit" -> 2
                     "pcm_32bit" -> 4
                     else -> 2 // Default to 2 bytes per sample if the encoding is not recognized
                 }
-                // Calculate duration based on the data size and byte rate
-                val duration = if (byteRate > 0) (dataFileSize * 1000 / byteRate) else 0
+                val duration = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
 
                 // Create result bundle
                 val result = bundleOf(
-                    "fileUri" to audioFile?.toURI().toString(),
                     "webmFileUri" to webmFile?.toURI().toString(),
-                    "filename" to audioFile?.name,
+                    "filename" to webmFile?.name,
                     "durationMs" to duration,
                     "channels" to recordingConfig.channels,
                     "bitDepth" to when (recordingConfig.encoding) {
@@ -391,7 +368,7 @@ class AudioRecorderManager(
                         else -> 16 // Default to 16 if the encoding is not recognized
                     },
                     "sampleRate" to recordingConfig.sampleRate,
-                    "size" to fileSize,
+                    "size" to totalDataSize,
                     "mimeType" to mimeType
                 )
                 promise.resolve(result)
@@ -401,6 +378,8 @@ class AudioRecorderManager(
                 isPaused.set(false)
                 totalRecordedTime = 0
                 pausedDuration = 0
+                totalDataSize = 0
+                pcmBuffer.reset()
             } catch (e: Exception) {
                 Log.d(Constants.TAG, "Failed to stop recording", e)
                 promise.reject("STOP_FAILED", "Failed to stop recording", e)
@@ -455,18 +434,15 @@ class AudioRecorderManager(
                 )
             }
 
-            // Ensure you update this to check if audioFile is null or not
-            val fileSize = audioFile?.length() ?: 0
-
-            val duration = when (mimeType) {
-                "audio/wav" -> {
-                    val dataFileSize = fileSize - Constants.WAV_HEADER_SIZE // Assuming header is always 44 bytes
-                    val byteRate = recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8
-                    if (byteRate > 0) dataFileSize * 1000 / byteRate else 0
-                }
-                "audio/opus", "audio/aac" -> getCompressedAudioDuration(audioFile)
-                else -> 0
+            // Calculate duration based on total data size and byte rate
+            val byteRate = recordingConfig.sampleRate * recordingConfig.channels * when (recordingConfig.encoding) {
+                "pcm_8bit" -> 1
+                "pcm_16bit" -> 2
+                "pcm_32bit" -> 4
+                else -> 2
             }
+            val duration = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
+            
             return bundleOf(
                 "durationMs" to duration,
                 "isRecording" to isRecording.get(),
@@ -492,99 +468,83 @@ class AudioRecorderManager(
 
     private fun recordingProcess() {
         Log.i(Constants.TAG, "Starting recording process...")
-        FileOutputStream(audioFile, true).use { fos ->
-            // Buffer to accumulate data
-            val accumulatedAudioData = ByteArrayOutputStream()
-            audioFileHandler.writeWavHeader(
-                accumulatedAudioData,
-                recordingConfig.sampleRate,
-                recordingConfig.channels,
-                when (recordingConfig.encoding) {
-                    "pcm_8bit" -> 8
-                    "pcm_16bit" -> 16
-                    "pcm_32bit" -> 32
-                    else -> 16 // Default to 16 if the encoding is not recognized
-                }
-            )
-            // Write audio data directly to the file
-            val audioData = ByteArray(bufferSizeInBytes)
-            Log.d(Constants.TAG, "Entering recording loop")
-            while (isRecording.get() && !Thread.currentThread().isInterrupted) {
-                if (isPaused.get()) {
-                    // If recording is paused, skip reading from the microphone
-                    continue
-                }
-
-                val bytesRead = synchronized(audioRecordLock) {
-                    // Only synchronize the read operation and the check
-                    audioRecord?.let {
-                        if (it.state != AudioRecord.STATE_INITIALIZED) {
-                            Log.e(Constants.TAG, "AudioRecord not initialized")
-                            return@let -1
-                        }
-                        it.read(audioData, 0, bufferSizeInBytes).also { bytes ->
-                            if (bytes < 0) {
-                                Log.e(Constants.TAG, "AudioRecord read error: $bytes")
-                            }
-                        }
-                    } ?: -1 // Handle null case
-                }
-                if (bytesRead > 0) {
-                    fos.write(audioData, 0, bytesRead)
-                    totalDataSize += bytesRead
-                    accumulatedAudioData.write(audioData, 0, bytesRead)
-
-                    // Write data to FFmpeg pipe
-                    try {
-                        pipeFos?.write(audioData, 0, bytesRead)
-                        pipeFos?.flush()
-                    } catch (e: Exception) {
-                        Log.e(Constants.TAG, "Error writing to FFmpeg pipe", e)
-                    }
-
-                    // Emit audio data at defined intervals
-                    if (SystemClock.elapsedRealtime() - lastEmitTime >= interval) {
-                        emitAudioData(
-                            accumulatedAudioData.toByteArray(),
-                            accumulatedAudioData.size()
-                        )
-                        lastEmitTime = SystemClock.elapsedRealtime() // Reset the timer
-                        accumulatedAudioData.reset() // Clear the accumulator
-                    }
-
-                    Log.d(Constants.TAG, "Bytes written to file: $bytesRead")
-                }
+        
+        // Buffer to accumulate data
+        val accumulatedAudioData = ByteArrayOutputStream()
+        
+        // Write audio data directly to the memory buffer
+        val audioData = ByteArray(bufferSizeInBytes)
+        Log.d(Constants.TAG, "Entering recording loop")
+        while (isRecording.get() && !Thread.currentThread().isInterrupted) {
+            if (isPaused.get()) {
+                // If recording is paused, skip reading from the microphone
+                continue
             }
-        }
-        // Update the WAV header to reflect the actual data size
-        audioFile?.let { file ->
-            audioFileHandler.updateWavHeader(file)
+
+            val bytesRead = synchronized(audioRecordLock) {
+                // Only synchronize the read operation and the check
+                audioRecord?.let {
+                    if (it.state != AudioRecord.STATE_INITIALIZED) {
+                        Log.e(Constants.TAG, "AudioRecord not initialized")
+                        return@let -1
+                    }
+                    it.read(audioData, 0, bufferSizeInBytes).also { bytes ->
+                        if (bytes < 0) {
+                            Log.e(Constants.TAG, "AudioRecord read error: $bytes")
+                        }
+                    }
+                } ?: -1 // Handle null case
+            }
+            if (bytesRead > 0) {
+                totalDataSize += bytesRead
+                accumulatedAudioData.write(audioData, 0, bytesRead)
+                pcmBuffer.write(audioData, 0, bytesRead)
+
+                // Write data to FFmpeg pipe
+                try {
+                    pipeFos?.write(audioData, 0, bytesRead)
+                    pipeFos?.flush()
+                } catch (e: Exception) {
+                    Log.e(Constants.TAG, "Error writing to FFmpeg pipe", e)
+                }
+
+                // Emit audio data at defined intervals
+                if (SystemClock.elapsedRealtime() - lastEmitTime >= interval) {
+                    emitAudioData(
+                        accumulatedAudioData.toByteArray(),
+                        accumulatedAudioData.size()
+                    )
+                    lastEmitTime = SystemClock.elapsedRealtime() // Reset the timer
+                    accumulatedAudioData.reset() // Clear the accumulator
+                }
+
+                Log.d(Constants.TAG, "Bytes read: $bytesRead")
+            }
         }
     }
 
     private fun emitAudioData(audioData: ByteArray, length: Int) {
         val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
 
-        val fileSize = audioFile?.length() ?: 0
-        val from = lastEmittedSize
-        val deltaSize = fileSize - lastEmittedSize
-        lastEmittedSize = fileSize
-
-        // Calculate position in milliseconds
-        val positionInMs = (from * 1000) / (recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8)
+        // Calculate position in milliseconds based on total data processed
+        val byteRate = recordingConfig.sampleRate * recordingConfig.channels * when (recordingConfig.encoding) {
+            "pcm_8bit" -> 1
+            "pcm_16bit" -> 2
+            "pcm_32bit" -> 4
+            else -> 2
+        }
+        val positionInMs = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
 
         mainHandler.post {
             try {
                 eventSender.sendExpoEvent(
                     Constants.AUDIO_EVENT_NAME, bundleOf(
-                        "fileUri" to audioFile?.toURI().toString(),
                         "webmFileUri" to webmFile?.toURI().toString(),
-                        "lastEmittedSize" to from,
                         "encoded" to encodedBuffer,
                         "deltaSize" to length,
                         "position" to positionInMs,
                         "mimeType" to mimeType,
-                        "totalSize" to fileSize,
+                        "totalSize" to totalDataSize,
                         "streamUuid" to streamUuid
                     )
                 )
