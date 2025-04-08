@@ -185,7 +185,7 @@ class AudioRecorderManager(
         }
 
         streamUuid = java.util.UUID.randomUUID().toString()
-        webmFile = File(filesDir, "audio_${streamUuid}.webm")
+        webmFile = File(filesDir, "audio_${streamUuid}.mp4")
         
         // Reset the PCM buffer
         pcmBuffer.reset()
@@ -216,9 +216,13 @@ class AudioRecorderManager(
                 Log.e(Constants.TAG, "WebM file path is null")
                 throw IOException("WebM file path is null")
             }
+
+            // add a few tolerance to the fragDuration
+            val fragDuration = interval * 1000 + 1000 // microseconds
             
             val ffmpegCommand = "-f $pcmFormat -ar ${recordingConfig.sampleRate} -ac ${recordingConfig.channels} " +
-                    "-i $ffmpegPipe -c:a libopus -application lowdelay -b:a 128k -flush_packets 1 -packet_size 1024 $webmFilePath"
+                    "-i $ffmpegPipe -c:a aac -b:a 128k -flush_packets 1 -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration $fragDuration $webmFilePath"
+                    // "-f $pcmFormat -ar ${recordingConfig.sampleRate} -ac ${recordingConfig.channels} -i $ffmpegPipe -c:a aac -b:a 128k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 100000 $webmFilePath"
             
             // 3. Execute FFmpeg command
             FFmpegKit.executeAsync(ffmpegCommand, { session ->
@@ -320,7 +324,6 @@ class AudioRecorderManager(
                     emitAudioData(audioData, bytesRead)
                     // Write final data to pipe
                     pipeFos?.write(audioData, 0, bytesRead)
-                    pipeFos?.flush()
                 }
 
                 Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")

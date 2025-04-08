@@ -37,6 +37,8 @@ class Microphone {
     private var isRecording: Bool = false
     private var isSilent: Bool = false
     
+    private var audioChunkCounter: Int = 0
+    
     init() {
         NotificationCenter.default.addObserver(
             self,
@@ -115,12 +117,9 @@ class Microphone {
             format = "s16le" // Default to 16-bit
         }
         
-        // Construct FFmpeg command to convert raw PCM to WebM with Opus codec
-        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -f mp4 -movflags frag_keyframe+empty_moov -frag_duration 1000000 \"\(webmFileURL.path)\""
-        
+        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a aac -b:a 128k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 100000 \"\(webmFileURL.path)\""
         Logger.debug("[Microphone] Starting FFmpeg with command: \(ffmpegCommand)")
         
-        // Execute FFmpeg command asynchronously
         ffmpegSession = FFmpegKit.executeAsync(ffmpegCommand) { session in
             if let returnCode = session?.getReturnCode(), returnCode.isValueSuccess() {
                 Logger.debug("[Microphone] FFmpeg process completed successfully")
@@ -130,10 +129,8 @@ class Microphone {
         } withLogCallback: { log in
             Logger.debug("[Microphone] FFmpeg log: \(log?.getMessage() ?? "")")
         } withStatisticsCallback: { statistics in
-            // Handle statistics if needed
         }
         
-        // Open the pipe for writing
         self.ffmpegPipeFileHandle = FileHandle(forWritingAtPath: pipe)
         if self.ffmpegPipeFileHandle == nil {
             Logger.debug("[Microphone] Failed to open pipe for writing")
@@ -145,20 +142,16 @@ class Microphone {
         return webmFileURL.absoluteString
     }
     
-    /// Closes the FFmpeg pipe and releases resources
     private func closeFFmpegPipe() {
         if let pipe = ffmpegPipe {
-            // Close the file handle first
             ffmpegPipeFileHandle?.closeFile()
             ffmpegPipeFileHandle = nil
             
-            // Close the pipe
             FFmpegKitConfig.closeFFmpegPipe(pipe)
             ffmpegPipe = nil
             Logger.debug("[Microphone] FFmpeg pipe closed")
         }
         
-        // Cancel FFmpeg session if it's still running
         if let session = ffmpegSession, session.getState() != .completed && session.getState() != .failed {
             FFmpegKit.cancel(session.getId())
             Logger.debug("[Microphone] FFmpeg session cancelled")
