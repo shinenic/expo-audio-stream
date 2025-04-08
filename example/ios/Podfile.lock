@@ -4,7 +4,7 @@ PODS:
   - EXAV (13.10.6):
     - ExpoModulesCore
     - ReactCommon/turbomodule/core
-  - EXConstants (15.4.6):
+  - EXConstants (15.4.5):
     - ExpoModulesCore
   - EXFont (11.10.3):
     - ExpoModulesCore
@@ -1297,13 +1297,13 @@ SPEC CHECKSUMS:
   boost: d3f49c53809116a5d38da093a8aa78bf551aed09
   DoubleConversion: fea03f2699887d960129cc54bba7e52542b6f953
   EXAV: e160fec51bf6bc41c3b6f7e4c72ea9fd36860cd6
-  EXConstants: fb35d8a5ab2ec7d31dd4f50506f38629ee47b0f6
-  EXFont: 546a15ea3eafc7b3fa3e7710a21595308048f4b5
+  EXConstants: 348adb88fb0d65892f16732ec5e02e1365c31588
+  EXFont: 64e653a110eee050ad80dfcd676c4bada0a1ff92
   Expo: 517abd0ff36eae90a7ec59c8afed4b5930e3657b
   ExpoDocumentPicker: 7f6bc79d2bad6d06129b60914085854ae1478d74
   ExpoFileSystem: df58e1eb2a4d6f1006a1ca70bddfbbf63e52fa4f
-  ExpoKeepAwake: 520c6c05a0d3cd54f37f56da93bd63fe8e17ed1a
-  ExpoModulesCore: 651f8ae792d6a1cd1c3428a888441978008abdaf
+  ExpoKeepAwake: 3b8cf8533b9212500565a1e41fb080fc5af29918
+  ExpoModulesCore: b96fa696e035bf3a586daa87e547f2d3dbd07800
   ExpoPlayAudioStream: cc3dbebffa26fc38bd88780c8ab630ee573dbc43
   ExpoSharing: 2537ddc516138bb6d8eb536ff7055e370485f4d1
   FBLazyVector: f64d1e2ea739b4d8f7e4740cde18089cd97fe864

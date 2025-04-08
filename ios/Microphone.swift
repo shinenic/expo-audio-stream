@@ -86,7 +86,7 @@ class Microphone {
         // Create a unique filename for the WebM output
         let fileManager = FileManager.default
         let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let webmFilename = UUID().uuidString + ".webm"
+        let webmFilename = UUID().uuidString + ".mp4"
         let webmFileURL = documentsDirectory.appendingPathComponent(webmFilename)
         
         // Register a new FFmpeg pipe
@@ -116,7 +116,7 @@ class Microphone {
         }
         
         // Construct FFmpeg command to convert raw PCM to WebM with Opus codec
-        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a libopus -b:a 128k \"\(webmFileURL.path)\""
+        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -f mp4 -movflags frag_keyframe+empty_moov -frag_duration 1000000 \"\(webmFileURL.path)\""
         
         Logger.debug("[Microphone] Starting FFmpeg with command: \(ffmpegCommand)")
         
