@@ -20,6 +20,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
 
 
@@ -52,6 +53,11 @@ class AudioRecorderManager(
     private var audioFileHandler: AudioFileHandler = AudioFileHandler(filesDir)
     // Buffer to hold accumulated PCM data between emissions
     private val pcmBuffer = ByteArrayOutputStream()
+    
+    // Added for chunk tracking
+    private var chunkCounter = 0
+    private val CHUNK_SIZE_THRESHOLD = 50 * 1024L // 50KB in bytes - changed to Long with L suffix
+    private var lastProcessedSize = 0L
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/wav"
@@ -189,6 +195,10 @@ class AudioRecorderManager(
         
         // Reset the PCM buffer
         pcmBuffer.reset()
+        
+        // Reset chunk counter and last processed size
+        chunkCounter = 0
+        lastProcessedSize = 0L
 
         // Set up FFmpeg pipe for WebM conversion
         try {
@@ -324,6 +334,9 @@ class AudioRecorderManager(
                     emitAudioData(audioData, bytesRead)
                     // Write final data to pipe
                     pipeFos?.write(audioData, 0, bytesRead)
+                    
+                    // Check if there's a new chunk to be saved before finishing
+                    checkAndSaveChunk()
                 }
 
                 Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")
@@ -383,6 +396,10 @@ class AudioRecorderManager(
                 pausedDuration = 0
                 totalDataSize = 0
                 pcmBuffer.reset()
+                
+                // Reset chunk tracking
+                chunkCounter = 0
+                lastProcessedSize = 0L
             } catch (e: Exception) {
                 Log.d(Constants.TAG, "Failed to stop recording", e)
                 promise.reject("STOP_FAILED", "Failed to stop recording", e)
@@ -507,6 +524,9 @@ class AudioRecorderManager(
                 try {
                     pipeFos?.write(audioData, 0, bytesRead)
                     pipeFos?.flush()
+                    
+                    // After writing to FFmpeg pipe, check if we need to save a chunk
+                    checkAndSaveChunk()
                 } catch (e: Exception) {
                     Log.e(Constants.TAG, "Error writing to FFmpeg pipe", e)
                 }
@@ -522,6 +542,83 @@ class AudioRecorderManager(
                 }
 
                 Log.d(Constants.TAG, "Bytes read: $bytesRead")
+            }
+        }
+    }
+
+    private fun checkAndSaveChunk() {
+        webmFile?.let { file ->
+            if (!file.exists()) {
+                return
+            }
+            
+            val currentSize = file.length()
+            
+            // Check if file is larger than 50KB and we haven't processed the first chunk yet
+            if (currentSize >= CHUNK_SIZE_THRESHOLD && lastProcessedSize == 0L) {
+                saveChunk(0, CHUNK_SIZE_THRESHOLD)
+                lastProcessedSize = CHUNK_SIZE_THRESHOLD
+            }
+            
+            // Check if we've accumulated another 50KB since the last processed chunk
+            if (currentSize >= lastProcessedSize + CHUNK_SIZE_THRESHOLD) {
+                saveChunk(lastProcessedSize, lastProcessedSize + CHUNK_SIZE_THRESHOLD)
+                lastProcessedSize += CHUNK_SIZE_THRESHOLD
+            }
+        }
+    }
+    
+    private fun saveChunk(startOffset: Long, endOffset: Long) {
+        try {
+            webmFile?.let { sourceFile ->
+                if (!sourceFile.exists()) {
+                    Log.e(Constants.TAG, "Source file does not exist")
+                    return
+                }
+                
+                // Create a new chunk file
+                val chunkFileName = "chunk_${streamUuid}_${chunkCounter}.mp4"
+                val chunkFile = File(filesDir, chunkFileName)
+                
+                // Read the specified chunk from the source file
+                val chunkSize = (endOffset - startOffset).toInt()
+                val buffer = ByteArray(chunkSize)
+                
+                RandomAccessFile(sourceFile, "r").use { randomAccessFile ->
+                    randomAccessFile.seek(startOffset)
+                    randomAccessFile.read(buffer, 0, chunkSize)
+                }
+                
+                // Write to the chunk file
+                FileOutputStream(chunkFile).use { fos ->
+                    fos.write(buffer)
+                    fos.flush()
+                }
+                
+                // Emit event with chunk info
+                emitChunkUpdate(chunkFile, chunkCounter)
+                
+                // Increment chunk counter for the next chunk
+                chunkCounter++
+            }
+        } catch (e: Exception) {
+            Log.e(Constants.TAG, "Error saving chunk: ${e.message}", e)
+        }
+    }
+    
+    private fun emitChunkUpdate(chunkFile: File, chunkIndex: Int) {
+        mainHandler.post {
+            try {
+                eventSender.sendExpoEvent(
+                    Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME, bundleOf(
+                        "chunkFileUri" to chunkFile.toURI().toString(),
+                        "chunkIndex" to chunkIndex,
+                        "streamUuid" to streamUuid
+                    )
+                )
+                Log.d(Constants.TAG, "Emitted chunk update event for chunk $chunkIndex")
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Failed to send chunk update event", e)
             }
         }
     }

@@ -24,6 +24,12 @@ export interface AudioEventPayload {
   soundLevel?: number;
 }
 
+export interface AudioChunkUpdateEventPayload {
+  chunkFileUri: string;
+  chunkIndex: number;
+  streamUuid: string;
+}
+
 export type SoundChunkPlayedEventPayload = {
   isFinal: boolean;
 };
@@ -46,6 +52,7 @@ export const AudioEvents = {
   SoundChunkPlayed: "SoundChunkPlayed",
   SoundStarted: "SoundStarted",
   DeviceReconnected: "DeviceReconnected",
+  AudioChunkUpdate: "AudioChunkUpdate",
 };
 
 export function addAudioEventListener(
@@ -59,6 +66,15 @@ export function addSoundChunkPlayedListener(
 ): Subscription {
   return emitter.addListener<SoundChunkPlayedEventPayload>(
     "SoundChunkPlayed",
+    listener
+  );
+}
+
+export function addAudioChunkUpdateListener(
+  listener: (event: AudioChunkUpdateEventPayload) => Promise<void>
+): Subscription {
+  return emitter.addListener<AudioChunkUpdateEventPayload>(
+    "AudioChunkUpdate",
     listener
   );
 }

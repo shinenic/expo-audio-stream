@@ -15,7 +15,9 @@ import {
 import {
   addAudioEventListener,
   addSoundChunkPlayedListener,
+  addAudioChunkUpdateListener,
   AudioEventPayload,
+  AudioChunkUpdateEventPayload,
   SoundChunkPlayedEventPayload,
   AudioEvents,
   subscribeToEvent,
@@ -44,10 +46,12 @@ export class ExpoPlayAudioStream {
   static async startRecording(recordingConfig: RecordingConfig): Promise<{
     recordingResult: StartRecordingResult;
     subscription?: Subscription;
+    chunkSubscription?: Subscription;
   }> {
-    const { onAudioStream, ...options } = recordingConfig;
+    const { onAudioStream, onAudioChunkUpdate, ...options } = recordingConfig;
 
     let subscription: Subscription | undefined;
+    let chunkSubscription: Subscription | undefined;
 
     if (onAudioStream && typeof onAudioStream == "function") {
       subscription = addAudioEventListener(async (event: AudioEventPayload) => {
@@ -68,14 +72,28 @@ export class ExpoPlayAudioStream {
       });
     }
 
+    if (onAudioChunkUpdate && typeof onAudioChunkUpdate == "function") {
+      chunkSubscription = addAudioChunkUpdateListener(
+        async (event: AudioChunkUpdateEventPayload) => {
+          const { chunkFileUri, chunkIndex, streamUuid } = event;
+          onAudioChunkUpdate?.({
+            chunkFileUri,
+            chunkIndex,
+            streamUuid,
+          });
+        }
+      );
+    }
+
     try {
       const recordingResult = await ExpoPlayAudioStreamModule.startRecording(
         options
       );
-      return { recordingResult, subscription };
+      return { recordingResult, subscription, chunkSubscription };
     } catch (error) {
       console.error(error);
       subscription?.remove();
+      chunkSubscription?.remove();
       throw new Error(`Failed to start recording: ${error}`);
     }
   }
@@ -253,10 +271,13 @@ export class ExpoPlayAudioStream {
   static async startMicrophone(recordingConfig: RecordingConfig): Promise<{
     recordingResult: StartRecordingResult;
     subscription?: Subscription;
+    chunkSubscription?: Subscription;
   }> {
     let subscription: Subscription | undefined;
+    let chunkSubscription: Subscription | undefined;
+
     try {
-      const { onAudioStream, ...options } = recordingConfig;
+      const { onAudioStream, onAudioChunkUpdate, ...options } = recordingConfig;
 
       if (onAudioStream && typeof onAudioStream == "function") {
         subscription = addAudioEventListener(
@@ -287,12 +308,26 @@ export class ExpoPlayAudioStream {
         );
       }
 
+      if (onAudioChunkUpdate && typeof onAudioChunkUpdate == "function") {
+        chunkSubscription = addAudioChunkUpdateListener(
+          async (event: AudioChunkUpdateEventPayload) => {
+            const { chunkFileUri, chunkIndex, streamUuid } = event;
+            onAudioChunkUpdate?.({
+              chunkFileUri,
+              chunkIndex,
+              streamUuid,
+            });
+          }
+        );
+      }
+
       const result = await ExpoPlayAudioStreamModule.startMicrophone(options);
 
-      return { recordingResult: result, subscription };
+      return { recordingResult: result, subscription, chunkSubscription };
     } catch (error) {
       console.error(error);
       subscription?.remove();
+      chunkSubscription?.remove();
       throw new Error(`Failed to start recording: ${error}`);
     }
   }
@@ -418,11 +453,23 @@ export class ExpoPlayAudioStream {
   static toggleSilence() {
     ExpoPlayAudioStreamModule.toggleSilence();
   }
+
+  /**
+   * Subscribes to audio chunk update events during recording.
+   * @param onAudioChunkUpdate - Callback function called when a new audio chunk is available
+   * @returns {Subscription} A subscription object to remove the listener
+   */
+  static subscribeToAudioChunkUpdates(
+    onAudioChunkUpdate: (event: AudioChunkUpdateEventPayload) => Promise<void>
+  ): Subscription {
+    return addAudioChunkUpdateListener(onAudioChunkUpdate);
+  }
 }
 
 export {
   AudioDataEvent,
   SoundChunkPlayedEventPayload,
+  AudioChunkUpdateEventPayload,
   DeviceReconnectedReason,
   DeviceReconnectedEventPayload,
   AudioRecording,

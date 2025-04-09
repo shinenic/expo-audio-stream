@@ -71,6 +71,11 @@ export interface RecordingConfig {
   enableProcessing?: boolean; // Boolean to enable/disable audio processing (default is false)
   pointsPerSecond?: number; // Number of data points to extract per second of audio (default is 1000)
   onAudioStream?: (event: AudioDataEvent) => Promise<void>; // Callback function to handle audio stream
+  onAudioChunkUpdate?: (event: {
+    chunkFileUri: string;
+    chunkIndex: number;
+    streamUuid: string;
+  }) => Promise<void>; // Callback function to handle audio chunk updates
 }
 
 export interface Chunk {

@@ -300,6 +300,9 @@ export default function CustomRecorder() {
           channels: CHANNELS,
           encoding: ENCODING,
           onAudioStream: onAudioCallback,
+          onAudioChunkUpdate: async (event) => {
+            console.log("onAudioChunkUpdate", event);
+          },
         });
 
       console.log(recordingResult.webmFileUri);

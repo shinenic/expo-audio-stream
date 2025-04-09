@@ -2781,6 +2781,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/lodash@npm:^4.17.16":
+  version: 4.17.16
+  resolution: "@types/lodash@npm:4.17.16"
+  checksum: 10c0/cf017901b8ab1d7aabc86d5189d9288f4f99f19a75caf020c0e2c77b8d4cead4db0d0b842d009b029339f92399f49f34377dd7c2721053388f251778b4c23534
+  languageName: node
+  linkType: hard
+
 "@types/node@npm:*":
   version: 20.12.4
   resolution: "@types/node@npm:20.12.4"
@@ -4347,6 +4354,7 @@ __metadata:
   dependencies:
     "@babel/core": "npm:^7.20.0"
     "@react-native-community/slider": "npm:^4.5.6"
+    "@types/lodash": "npm:^4.17.16"
     "@types/react": "npm:~18.2.45"
     "@types/uuid": "npm:^10"
     expo: "npm:~50.0.14"
@@ -4354,6 +4362,7 @@ __metadata:
     expo-document-picker: "npm:~11.10.1"
     expo-file-system: "npm:~16.0.9"
     expo-sharing: "npm:~11.10.0"
+    lodash: "npm:^4.17.21"
     react: "npm:18.2.0"
     react-native: "npm:0.73.6"
     react-native-permissions: "npm:^5.3.0"
@@ -5884,7 +5893,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lodash@npm:^4.17.13, lodash@npm:^4.17.4":
+"lodash@npm:^4.17.13, lodash@npm:^4.17.21, lodash@npm:^4.17.4":
   version: 4.17.21
   resolution: "lodash@npm:4.17.21"
   checksum: 10c0/d8cbea072bb08655bb4c989da418994b073a608dffa608b09ac04b43a791b12aeae7cd7ad919aa4c925f33b48490b5cfe6c1f71d827956071dae2e7bb3a6b74c
