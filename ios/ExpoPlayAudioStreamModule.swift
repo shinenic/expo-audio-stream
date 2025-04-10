@@ -6,6 +6,7 @@ let audioDataEvent: String = "AudioData"
 let soundIsPlayedEvent: String = "SoundChunkPlayed"
 let soundIsStartedEvent: String = "SoundStarted"
 let deviceReconnectedEvent: String = "DeviceReconnected"
+let audioChunkUpdateEvent: String = "AudioChunkUpdate"
 
 
 public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, MicrophoneDataDelegate, SoundPlayerDelegate {
@@ -24,7 +25,14 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
     private var microphone: Microphone {
         if _microphone == nil {
             _microphone = Microphone()
+            Logger.debug("[ExpoPlayAudioStreamModule] Created new Microphone instance and assigning self as delegate")
             _microphone?.delegate = self
+        } else {
+            // 確保代理是正確設置的
+            if _microphone?.delegate == nil {
+                Logger.debug("[ExpoPlayAudioStreamModule] Re-assigning delegate to Microphone instance")
+                _microphone?.delegate = self
+            }
         }
         return _microphone!
     }
@@ -43,7 +51,8 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
         Name("ExpoPlayAudioStream")
         
         // Defines event names that the module can send to JavaScript.
-        Events([audioDataEvent, soundIsPlayedEvent, soundIsStartedEvent, deviceReconnectedEvent])
+        // Logger.debug("[ExpoPlayAudioStreamModule] Registering events: \(audioDataEvent), \(soundIsPlayedEvent), \(soundIsStartedEvent), \(deviceReconnectedEvent), \(audioChunkUpdateEvent)")
+        Events([audioDataEvent, soundIsPlayedEvent, soundIsStartedEvent, deviceReconnectedEvent, audioChunkUpdateEvent])
         
         Function("destroy") {
             // Now we can properly reset all instances
@@ -249,6 +258,8 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
         }
         
         AsyncFunction("startMicrophone") { (options: [String: Any], promise: Promise) in
+            Logger.debug("[ExpoPlayAudioStreamModule] startMicrophone called")
+            
             // Create recording settings
             // Extract settings from provided options, using default values if necessary
             let sampleRate = options["sampleRate"] as? Double ?? 16000.0 // it fails if not 48000, why?
@@ -273,6 +284,12 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
                     return
                 }
             }            
+            
+            // 確保代理正確設置
+            if self.microphone.delegate == nil {
+                Logger.debug("[ExpoPlayAudioStreamModule] WARNING: Microphone delegate is nil, assigning now")
+                self.microphone.delegate = self
+            }
             
             if let result = self.microphone.startRecording(settings: settings, intervalMilliseconds: interval) {
                 if let resError = result.error {
@@ -523,5 +540,24 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
     
     func onSoundStartedPlaying() {
         sendEvent(soundIsStartedEvent)
+    }
+    
+    func onAudioChunkUpdate(chunkFileUri: String, chunkIndex: Int, streamUuid: String, isLastChunk: Bool) {
+        Logger.debug("[ExpoPlayAudioStreamModule] onAudioChunkUpdate called with chunkIndex: \(chunkIndex), isLastChunk: \(isLastChunk)")
+        let eventBody: [String: Any] = [
+            "chunkFileUri": chunkFileUri,
+            "chunkIndex": chunkIndex,
+            "streamUuid": streamUuid,
+            "isLastChunk": isLastChunk
+        ]
+        Logger.debug("[ExpoPlayAudioStreamModule] Sending event: \(audioChunkUpdateEvent) with body: \(eventBody)")
+        
+        // 使用 DispatchQueue.main.async 確保在主線程上發送事件
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            Logger.debug("[ExpoPlayAudioStreamModule] About to send event on main thread")
+            self.sendEvent(audioChunkUpdateEvent, eventBody)
+            Logger.debug("[ExpoPlayAudioStreamModule] Event sent successfully")
+        }
     }
 }

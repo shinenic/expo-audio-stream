@@ -75,6 +75,7 @@ export interface RecordingConfig {
     chunkFileUri: string;
     chunkIndex: number;
     streamUuid: string;
+    isLastChunk: boolean;
   }) => Promise<void>; // Callback function to handle audio chunk updates
 }
 
@@ -102,6 +103,8 @@ export interface AudioRecording {
   bitDepth: BitDepth;
   sampleRate: SampleRate;
   mimeType: string;
+  finalChunkFileUri?: string;
+  finalChunkIndex?: number;
   transcripts?: TranscriberData[];
   wavPCMData?: Float32Array; // Full PCM data for the recording in WAV format (only on web, for native use the fileUri)
 }

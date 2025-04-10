@@ -75,11 +75,12 @@ export class ExpoPlayAudioStream {
     if (onAudioChunkUpdate && typeof onAudioChunkUpdate == "function") {
       chunkSubscription = addAudioChunkUpdateListener(
         async (event: AudioChunkUpdateEventPayload) => {
-          const { chunkFileUri, chunkIndex, streamUuid } = event;
+          const { chunkFileUri, chunkIndex, streamUuid, isLastChunk } = event;
           onAudioChunkUpdate?.({
             chunkFileUri,
             chunkIndex,
             streamUuid,
+            isLastChunk,
           });
         }
       );
@@ -311,11 +312,12 @@ export class ExpoPlayAudioStream {
       if (onAudioChunkUpdate && typeof onAudioChunkUpdate == "function") {
         chunkSubscription = addAudioChunkUpdateListener(
           async (event: AudioChunkUpdateEventPayload) => {
-            const { chunkFileUri, chunkIndex, streamUuid } = event;
+            const { chunkFileUri, chunkIndex, streamUuid, isLastChunk } = event;
             onAudioChunkUpdate?.({
               chunkFileUri,
               chunkIndex,
               streamUuid,
+              isLastChunk,
             });
           }
         );
@@ -462,7 +464,10 @@ export class ExpoPlayAudioStream {
   static subscribeToAudioChunkUpdates(
     onAudioChunkUpdate: (event: AudioChunkUpdateEventPayload) => Promise<void>
   ): Subscription {
-    return addAudioChunkUpdateListener(onAudioChunkUpdate);
+    const subscription = addAudioChunkUpdateListener(async (event) => {
+      await onAudioChunkUpdate(event);
+    });
+    return subscription;
   }
 }
 

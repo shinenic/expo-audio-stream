@@ -65,15 +65,11 @@ app.post("/complete", async (req, res) => {
     return res.status(404).json({ error: "Session not found" });
   }
 
-  // if (session.chunks.length !== session.totalChunks) {
-  //   console.log(`Not all chunks uploaded for session ID: ${id}`);
-  //   return res.status(400).json({ error: "Not all chunks uploaded" });
-  // }
-
-  // if the session chunks is not completed
   const sortedChunks = session.chunks.sort((a, b) => a.index - b.index);
-  if (sortedChunks[0] !== 0) {
-    console.log(`Not all chunks uploaded for session ID: ${id}`);
+  if (sortedChunks[0].index !== 0) {
+    console.log(
+      `Not all chunks uploaded for session ID: ${id}, the first chunk index is ${sortedChunks[0].index}`
+    );
     return res.status(400).json({ error: "Not all chunks uploaded" });
   }
 
@@ -84,10 +80,10 @@ app.post("/complete", async (req, res) => {
     }
   }
 
-  if (sortedChunks[sortedChunks.length - 1] !== sortedChunks.length - 1) {
+  if (sortedChunks[sortedChunks.length - 1].index !== sortedChunks.length - 1) {
     console.log(
       `Not all chunks uploaded for session ID: ${id}, got ${
-        sortedChunks[sortedChunks.length - 1]
+        sortedChunks[sortedChunks.length - 1].index
       } expected ${sortedChunks.length - 1}`
     );
     return res.status(400).json({ error: "Not all chunks uploaded" });
@@ -97,10 +93,35 @@ app.post("/complete", async (req, res) => {
   fs.mkdirSync(outputDir, { recursive: true });
   console.log(`Output directory ensured at ${outputDir}`);
 
-  const outputFile = path.join(outputDir, `${id}.wav`);
+  const outputFile = path.join(outputDir, `${id}.mp4`);
 
   try {
-    // ffmpeg execution (WIP...)
+    // merge all chunks based on the index
+    const chunkFiles = sortedChunks.map((chunk) => chunk.chunkPath);
+
+    // approach 1. Create a temporary file with list of chunks for ffmpeg
+    const concatFile = path.join(session.dir, "concat.txt");
+    const concatContent = chunkFiles
+      .map((file) => `file '${path.resolve(file)}'`)
+      .join("\n");
+    fs.writeFileSync(concatFile, concatContent);
+
+    // Use ffmpeg to concatenate the chunks
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(concatFile)
+        .inputOptions(["-f concat", "-safe 0", "-fflags +genpts"])
+        .output(outputFile)
+        .on("end", resolve)
+        .on("error", reject)
+        .run();
+    });
+
+    // // approach 2. concat all the files directly (no ffmpeg)
+    // const outputBuffer = Buffer.concat(
+    //   chunkFiles.map((file) => fs.readFileSync(file))
+    // );
+    // fs.writeFileSync(outputFile, outputBuffer);
 
     // Clean up session files
     fs.rmSync(session.dir, { recursive: true, force: true });
@@ -109,7 +130,7 @@ app.post("/complete", async (req, res) => {
 
     // Return the static URL
     res.json({
-      url: `/audio/${id}.wav`,
+      url: `/audio/${id}`,
       fileSize: fs.statSync(outputFile).size,
     });
   } catch (error) {
@@ -118,7 +139,86 @@ app.post("/complete", async (req, res) => {
   }
 });
 
+// app.post("/incomplete", async (req, res) => {
+//   console.log("Received request to complete session");
+//   const { id } = req.query;
+//   const session = sessions.get(id);
+
+//   if (!session) {
+//     console.log(`Session not found for ID: ${id}`);
+//     return res.status(404).json({ error: "Session not found" });
+//   }
+
+//   const sortedChunks = session.chunks.sort((a, b) => a.index - b.index);
+//   if (sortedChunks[0].index !== 0) {
+//     console.log(
+//       `Not all chunks uploaded for session ID: ${id}, the first chunk index is ${sortedChunks[0].index}`
+//     );
+//     return res.status(400).json({ error: "Not all chunks uploaded" });
+//   }
+
+//   for (const chunk of sortedChunks) {
+//     if (!fs.existsSync(chunk.chunkPath)) {
+//       console.log(`Chunk ${chunk.index} not found for session ID: ${id}`);
+//       return res.status(400).json({ error: "Chunk not found" });
+//     }
+//   }
+
+//   if (sortedChunks[sortedChunks.length - 1].index !== sortedChunks.length - 1) {
+//     console.log(
+//       `Not all chunks uploaded for session ID: ${id}, got ${
+//         sortedChunks[sortedChunks.length - 1].index
+//       } expected ${sortedChunks.length - 1}`
+//     );
+//     return res.status(400).json({ error: "Not all chunks uploaded" });
+//   }
+
+//   const outputDir = path.join("public", "audio");
+//   fs.mkdirSync(outputDir, { recursive: true });
+//   console.log(`Output directory ensured at ${outputDir}`);
+
+//   const outputFile = path.join(outputDir, `${id}.mp4`);
+
+//   try {
+//     // merge all chunks based on the index
+//     const chunkFiles = sortedChunks.map((chunk) => chunk.chunkPath);
+
+//     // Create a temporary file with list of chunks for ffmpeg
+//     const concatFile = path.join(session.dir, "concat.txt");
+//     const concatContent = chunkFiles
+//       .map((file) => `file '${path.resolve(file)}'`)
+//       .join("\n");
+//     fs.writeFileSync(concatFile, concatContent);
+
+//     // Use ffmpeg to concatenate the chunks
+//     await new Promise((resolve, reject) => {
+//       ffmpeg()
+//         .input(concatFile)
+//         .inputOptions(["-f concat", "-safe 0"])
+//         .output(outputFile)
+//         .on("end", resolve)
+//         .on("error", reject)
+//         .run();
+//     });
+
+//     // Clean up session files
+//     fs.rmSync(session.dir, { recursive: true, force: true });
+//     sessions.delete(id);
+//     console.log(`Session files cleaned up for ID: ${id}`);
+
+//     // Return the static URL
+//     res.json({
+//       url: `/audio/${id}`,
+//       fileSize: fs.statSync(outputFile).size,
+//     });
+//   } catch (error) {
+//     console.error("Error merging chunks:", error);
+//     res.status(500).json({ error: "Failed to merge chunks" });
+//   }
+// });
+
 // Serve static files from public directory
+
 app.use("/audio", express.static(path.join(__dirname, "public", "audio")));
 
 const PORT = process.env.PORT || 3000;

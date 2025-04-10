@@ -12,6 +12,7 @@ import * as FileSystem from "expo-file-system";
 //   ReturnCode,
 // } from "ffmpeg-kit-react-native";
 import * as Sharing from "expo-sharing";
+import { Uploader } from "./uploader";
 
 const ANDROID_SAMPLE_RATE = 48000;
 const IOS_SAMPLE_RATE = 48000;
@@ -37,6 +38,7 @@ export default function CustomRecorder() {
   const [chunks, setChunks] = useState<
     { position: number; fileUri: string; size: number }[]
   >([]);
+  const uploader = useRef<Uploader | null>(null);
 
   const onAudioCallback = async (audio: AudioDataEvent) => {
     console.log("on audio callback");
@@ -148,31 +150,17 @@ export default function CustomRecorder() {
     };
   }, [isRecording]);
 
-  const formatDuration = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs
-      .toString()
-      .padStart(2, "0")}`;
-  };
-
   const playAudio = async (uri: string) => {
     try {
       if (!uri) {
-        console.log("No audio URI provided");
+        alert("No audio URI provided");
         return;
       }
 
-      // Unload any existing sound
       if (sound) {
         await sound.unloadAsync();
       }
 
-      // Add a small delay before playing to ensure file is ready
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      console.log({ uri });
-      // Create and play the new sound
       const { sound: newSound } = await Audio.Sound.createAsync({
         // uri: `https://github.com/michaelmob/WebMCam/raw/refs/heads/master/Preview/example-audio.webm`,
         uri,
@@ -200,7 +188,6 @@ export default function CustomRecorder() {
         if (!uri.startsWith(FileSystem.cacheDirectory!)) {
           const fileInfo = await FileSystem.getInfoAsync(uri);
           if (fileInfo.exists) {
-            // const fileExtension = uri.endsWith(".webm") ? "webm" : "wav";
             const fileExtension = uri.split(".").pop();
             const fileName = `share-audio-${Date.now()}.${fileExtension}`;
             const destinationUri = `${FileSystem.cacheDirectory}${fileName}`;
@@ -240,58 +227,10 @@ export default function CustomRecorder() {
     }
 
     try {
-      // // Clean up any existing session
-      // await cleanupFFmpegSession();
+      uploader.current = new Uploader();
 
-      // // Reset temp chunk counter
-      // tempChunkCounter.current = 0;
-
-      // // Create output file path for the webm file
-      // const outputFile = `${
-      //   FileSystem.documentDirectory
-      // }recording_${Date.now()}.webm`;
-      // outputFileRef.current = outputFile;
-
-      // // Register a new FFmpeg pipe
-      // const pipeName = await FFmpegKitConfig.registerNewFFmpegPipe();
-      // pipePathRef.current = pipeName;
-
-      // console.log("Registered pipe:", pipeName);
-
-      // Build the FFmpeg command for converting PCM to WebM (Opus)
       const sampleRate =
         Platform.OS === "ios" ? IOS_SAMPLE_RATE : ANDROID_SAMPLE_RATE;
-
-      // // FFmpeg command that reads from pipe and outputs to WebM with Opus codec
-      // const ffmpegCommand = `-f s16le -ar ${sampleRate} -ac ${CHANNELS} -i ${pipeName} -c:a libopus -b:a 128k ${outputFile}`;
-
-      // console.log("Starting FFmpeg with command:", ffmpegCommand);
-
-      // // Start FFmpeg in the background
-      // FFmpegKit.executeAsync(ffmpegCommand, async (session) => {
-      //   const returnCode = await session.getReturnCode();
-      //   ffmpegSessionRef.current = null;
-
-      //   if (ReturnCode.isSuccess(returnCode)) {
-      //     console.log(`Successfully encoded audio to WebM: ${outputFile}`);
-      //     setWebMRecordingUri(outputFile);
-      //   } else {
-      //     console.error(
-      //       `FFmpeg operation failed with return code: ${returnCode}`
-      //     );
-      //     const output = await session.getOutput();
-      //     console.error("FFmpeg output:", output);
-      //   }
-      // }).then((session) => {
-      //   ffmpegSessionRef.current = session;
-
-      //   setInterval(() => {
-      //     FileSystem.getInfoAsync(outputFile).then((res) => {
-      //       console.log(res.exists ? res.size : "not found");
-      //     });
-      //   }, 2000);
-      // });
-
       // Start microphone recording
       const { recordingResult, subscription } =
         await ExpoPlayAudioStream.startMicrophone({
@@ -301,21 +240,36 @@ export default function CustomRecorder() {
           encoding: ENCODING,
           onAudioStream: onAudioCallback,
           onAudioChunkUpdate: async (event) => {
-            console.log("onAudioChunkUpdate", event);
+            console.log(
+              "onAudioChunkUpdate callback invoked, index: ",
+              event.chunkIndex,
+              "isLastChunk:",
+              event.isLastChunk
+            );
+
+            if (uploader.current) {
+              uploader.current.addChunk({
+                uri: event.chunkFileUri,
+                index: event.chunkIndex,
+              });
+
+              if (event.isLastChunk) {
+                uploader.current.done();
+              }
+            }
           },
         });
 
-      console.log(recordingResult.webmFileUri);
       if (recordingResult.webmFileUri) {
         setWebMRecordingUri(recordingResult.webmFileUri);
 
-        setInterval(() => {
-          FileSystem.getInfoAsync(recordingResult.webmFileUri || "").then(
-            (res) => {
-              console.log(res.exists ? res.size : "not found");
-            }
-          );
-        }, 2000);
+        // setInterval(() => {
+        //   FileSystem.getInfoAsync(recordingResult.webmFileUri || "").then(
+        //     (res) => {
+        //       console.log(res.exists ? res.size : "not found");
+        //     }
+        //   );
+        // }, 2000);
       }
 
       console.log(JSON.stringify(recordingResult, null, 2));
@@ -346,12 +300,6 @@ export default function CustomRecorder() {
         eventListenerSubscriptionRef.current.remove();
         eventListenerSubscriptionRef.current = undefined;
       }
-
-      // Close the pipe to signal end of input to FFmpeg
-      // if (pipePathRef.current) {
-      //   await FFmpegKitConfig.closeFFmpegPipe(pipePathRef.current);
-      //   pipePathRef.current = null;
-      // }
 
       setIsRecording(false);
     } catch (error) {
@@ -542,4 +490,12 @@ export const requestMicrophonePermission = async (): Promise<boolean> => {
     permissionGranted = grantedPermission;
   }
   return permissionGranted;
+};
+
+const formatDuration = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, "0")}:${secs
+    .toString()
+    .padStart(2, "0")}`;
 };

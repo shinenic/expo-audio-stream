@@ -63,6 +63,18 @@ class AudioRecorderManager(
     private var mimeType = "audio/wav"
     private var audioFormat: Int = AudioFormat.ENCODING_PCM_16BIT
 
+    // 創建新的實例變數，用於跟踪最後一個塊文件以及最後一次塊創建的時間
+    private var lastChunkFile: File? = null
+    private var lastChunkCreationTime: Long = 0
+
+    // 添加一個集合來跟踪已發送的塊索引
+    private val sentChunkIndices = mutableSetOf<Int>()
+    private var sentFinalChunk = false
+    
+    // 添加跟踪最終塊信息的變量
+    private var finalChunkFileUri: String? = null
+    private var finalChunkIndex: Int = -1
+
     @RequiresApi(Build.VERSION_CODES.R)
     fun startRecording(options: Map<String, Any?>, promise: Promise) {
         if (!permissionUtils.checkRecordingPermission()) {
@@ -196,9 +208,17 @@ class AudioRecorderManager(
         // Reset the PCM buffer
         pcmBuffer.reset()
         
-        // Reset chunk counter and last processed size
+        // Reset chunk tracking
         chunkCounter = 0
+        lastChunkFile = null
+        lastChunkCreationTime = 0
         lastProcessedSize = 0L
+        sentChunkIndices.clear()
+        sentFinalChunk = false
+        
+        // 重置最終塊信息
+        finalChunkFileUri = null
+        finalChunkIndex = -1
 
         // Set up FFmpeg pipe for WebM conversion
         try {
@@ -334,10 +354,10 @@ class AudioRecorderManager(
                     emitAudioData(audioData, bytesRead)
                     // Write final data to pipe
                     pipeFos?.write(audioData, 0, bytesRead)
-                    
-                    // Check if there's a new chunk to be saved before finishing
-                    checkAndSaveChunk()
                 }
+                
+                // 直接處理最後一個塊，標記為最後一個
+                processLastChunk()
 
                 Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")
                 if (audioRecord != null && audioRecord!!.state == AudioRecord.STATE_INITIALIZED) {
@@ -372,7 +392,7 @@ class AudioRecorderManager(
                 val duration = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
 
                 // Create result bundle
-                val result = bundleOf(
+                val resultBuilder = bundleOf(
                     "webmFileUri" to webmFile?.toURI().toString(),
                     "filename" to webmFile?.name,
                     "durationMs" to duration,
@@ -387,7 +407,18 @@ class AudioRecorderManager(
                     "size" to totalDataSize,
                     "mimeType" to mimeType
                 )
-                promise.resolve(result)
+                
+                // JavaScript端現在已經依賴於通過onAudioChunkUpdate事件接收最終塊的信息（isLastChunk=true）
+                // 因此我們不需要在結果對象中包含這些信息，但保留注釋以供參考
+                // 如果將來需要修改為在結果中包含這些信息，取消下面的註釋：
+                /*
+                if (finalChunkFileUri != null && finalChunkIndex >= 0) {
+                    resultBuilder.putString("finalChunkFileUri", finalChunkFileUri)
+                    resultBuilder.putInt("finalChunkIndex", finalChunkIndex)
+                }
+                */
+                
+                promise.resolve(resultBuilder)
 
                 // Reset the timing variables
                 isRecording.set(false)
@@ -399,7 +430,14 @@ class AudioRecorderManager(
                 
                 // Reset chunk tracking
                 chunkCounter = 0
-                lastProcessedSize = 0L
+                lastChunkFile = null
+                lastChunkCreationTime = 0
+                sentChunkIndices.clear()
+                sentFinalChunk = false
+                
+                // 重置最終塊信息
+                finalChunkFileUri = null
+                finalChunkIndex = -1
             } catch (e: Exception) {
                 Log.d(Constants.TAG, "Failed to stop recording", e)
                 promise.reject("STOP_FAILED", "Failed to stop recording", e)
@@ -525,8 +563,8 @@ class AudioRecorderManager(
                     pipeFos?.write(audioData, 0, bytesRead)
                     pipeFos?.flush()
                     
-                    // After writing to FFmpeg pipe, check if we need to save a chunk
-                    checkAndSaveChunk()
+                    // 在每次寫入 pipe 後嘗試創建並發送音頻塊
+                    createAndEmitAudioChunk()
                 } catch (e: Exception) {
                     Log.e(Constants.TAG, "Error writing to FFmpeg pipe", e)
                 }
@@ -546,77 +584,103 @@ class AudioRecorderManager(
         }
     }
 
-    private fun checkAndSaveChunk() {
-        webmFile?.let { file ->
-            if (!file.exists()) {
+    private fun createAndEmitAudioChunk() {
+        webmFile?.let { sourceFile ->
+            if (!sourceFile.exists()) {
+                Log.d(Constants.TAG, "WebM file does not exist, skipping chunk creation")
                 return
             }
             
-            val currentSize = file.length()
-            
-            // Check if file is larger than 50KB and we haven't processed the first chunk yet
-            if (currentSize >= CHUNK_SIZE_THRESHOLD && lastProcessedSize == 0L) {
-                saveChunk(0, CHUNK_SIZE_THRESHOLD)
-                lastProcessedSize = CHUNK_SIZE_THRESHOLD
+            val currentTime = SystemClock.elapsedRealtime()
+            // 確保我們按照設定的時間間隔創建塊
+            if (currentTime - lastChunkCreationTime < interval) {
+                Log.d(Constants.TAG, "Not enough time elapsed for new chunk (${currentTime - lastChunkCreationTime}ms < ${interval}ms)")
+                return // 尚未達到間隔時間
             }
             
-            // Check if we've accumulated another 50KB since the last processed chunk
-            if (currentSize >= lastProcessedSize + CHUNK_SIZE_THRESHOLD) {
-                saveChunk(lastProcessedSize, lastProcessedSize + CHUNK_SIZE_THRESHOLD)
-                lastProcessedSize += CHUNK_SIZE_THRESHOLD
-            }
-        }
-    }
-    
-    private fun saveChunk(startOffset: Long, endOffset: Long) {
-        try {
-            webmFile?.let { sourceFile ->
-                if (!sourceFile.exists()) {
-                    Log.e(Constants.TAG, "Source file does not exist")
-                    return
-                }
-                
-                // Create a new chunk file
+            try {
+                // 創建新的塊文件
                 val chunkFileName = "chunk_${streamUuid}_${chunkCounter}.mp4"
                 val chunkFile = File(filesDir, chunkFileName)
                 
-                // Read the specified chunk from the source file
-                val chunkSize = (endOffset - startOffset).toInt()
-                val buffer = ByteArray(chunkSize)
+                // 複製當前的文件內容到塊文件
+                sourceFile.copyTo(chunkFile, overwrite = true)
                 
-                RandomAccessFile(sourceFile, "r").use { randomAccessFile ->
-                    randomAccessFile.seek(startOffset)
-                    randomAccessFile.read(buffer, 0, chunkSize)
-                }
+                // 更新最後創建的塊文件和時間
+                lastChunkFile = chunkFile
+                lastChunkCreationTime = currentTime
                 
-                // Write to the chunk file
-                FileOutputStream(chunkFile).use { fos ->
-                    fos.write(buffer)
-                    fos.flush()
-                }
+                Log.d(Constants.TAG, "Creating chunk ${chunkCounter}, sentChunkIndices: $sentChunkIndices")
                 
-                // Emit event with chunk info
-                emitChunkUpdate(chunkFile, chunkCounter)
+                // 發送事件
+                emitChunkUpdate(chunkFile, chunkCounter, false)
                 
-                // Increment chunk counter for the next chunk
+                // 記錄已發送的塊索引
+                sentChunkIndices.add(chunkCounter)
+                
+                // 增加塊計數器
                 chunkCounter++
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Error creating audio chunk", e)
             }
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Error saving chunk: ${e.message}", e)
         }
     }
-    
-    private fun emitChunkUpdate(chunkFile: File, chunkIndex: Int) {
+
+    private fun processLastChunk() {
+        if (webmFile != null && !sentFinalChunk) {
+            // 使用當前的索引（而非chunkCounter-1）創建一個新的最終塊
+            Log.d(Constants.TAG, "Creating a new final chunk with index $chunkCounter, existing sentChunkIndices: $sentChunkIndices")
+            
+            try {
+                // 創建新的最終塊文件
+                val finalChunkFileName = "chunk_${streamUuid}_${chunkCounter}.mp4"
+                val finalChunkFile = File(filesDir, finalChunkFileName)
+                
+                // 複製當前的文件內容到最終塊文件
+                webmFile?.copyTo(finalChunkFile, overwrite = true)
+                
+                // 保存最終塊文件信息
+                finalChunkFileUri = finalChunkFile.toURI().toString()
+                finalChunkIndex = chunkCounter
+                
+                // 發送標記為最終塊的事件
+                mainHandler.post {
+                    try {
+                        eventSender.sendExpoEvent(
+                            Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME, bundleOf(
+                                "chunkFileUri" to finalChunkFile.toURI().toString(),
+                                "chunkIndex" to chunkCounter,
+                                "streamUuid" to streamUuid,
+                                "isLastChunk" to true
+                            )
+                        )
+                        Log.d(Constants.TAG, "Created and marked NEW chunk $chunkCounter as final chunk")
+                        sentFinalChunk = true
+                        // 不要增加chunkCounter，因為我們已經停止錄音了
+                    } catch (e: Exception) {
+                        Log.e(Constants.TAG, "Failed to send final chunk update event", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Error creating final audio chunk", e)
+            }
+        } else {
+            Log.d(Constants.TAG, "Skipping processLastChunk as final chunk was already sent (sentFinalChunk: $sentFinalChunk) or no webm file created (webmFile: ${webmFile != null})")
+        }
+    }
+
+    private fun emitChunkUpdate(chunkFile: File, chunkIndex: Int, isLastChunk: Boolean) {
         mainHandler.post {
             try {
                 eventSender.sendExpoEvent(
                     Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME, bundleOf(
                         "chunkFileUri" to chunkFile.toURI().toString(),
                         "chunkIndex" to chunkIndex,
-                        "streamUuid" to streamUuid
+                        "streamUuid" to streamUuid,
+                        "isLastChunk" to isLastChunk
                     )
                 )
-                Log.d(Constants.TAG, "Emitted chunk update event for chunk $chunkIndex")
+                Log.d(Constants.TAG, "Emitted chunk update event for chunk $chunkIndex, isLastChunk: $isLastChunk, URI: ${chunkFile.toURI()}")
             } catch (e: Exception) {
                 Log.e(Constants.TAG, "Failed to send chunk update event", e)
             }
