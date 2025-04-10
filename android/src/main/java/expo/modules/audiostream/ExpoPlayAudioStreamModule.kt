@@ -20,6 +20,7 @@ class ExpoPlayAudioStreamModule : Module(), EventSender {
         Name("ExpoPlayAudioStream")
 
         Events(Constants.AUDIO_EVENT_NAME)
+        Events(Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME)
 
         // Initialize managers for playback and for recording
         initializeManager()
@@ -179,7 +180,7 @@ class ExpoPlayAudioStreamModule : Module(), EventSender {
         val permissionUtils = PermissionUtils(androidContext)
         val audioEncoder = AudioDataEncoder()
         audioRecorderManager =
-            AudioRecorderManager(androidContext.filesDir, permissionUtils, audioEncoder, this)
+            AudioRecorderManager(androidContext.filesDir, permissionUtils, audioEncoder, this, androidContext)
     }
 
     private fun initializePlaybackManager() {

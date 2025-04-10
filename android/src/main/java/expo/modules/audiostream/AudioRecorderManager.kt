@@ -11,11 +11,16 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.os.bundleOf
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import expo.modules.kotlin.Promise
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
 
 
@@ -23,14 +28,17 @@ class AudioRecorderManager(
     private val filesDir: File,
     private val permissionUtils: PermissionUtils,
     private val audioDataEncoder: AudioDataEncoder,
-    private val eventSender: EventSender
+    private val eventSender: EventSender,
+    private val context: android.content.Context
 ) {
     private var audioRecord: AudioRecord? = null
     private var bufferSizeInBytes = 0
     private var isRecording = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
     private var streamUuid: String? = null
-    private var audioFile: File? = null
+    private var webmFile: File? = null
+    private var ffmpegPipe: String? = null
+    private var pipeFos: FileOutputStream? = null
     private var recordingThread: Thread? = null
     private var recordingStartTime: Long = 0
     private var totalRecordedTime: Long = 0
@@ -43,10 +51,29 @@ class AudioRecorderManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioRecordLock = Any()
     private var audioFileHandler: AudioFileHandler = AudioFileHandler(filesDir)
+    // Buffer to hold accumulated PCM data between emissions
+    private val pcmBuffer = ByteArrayOutputStream()
+    
+    // Added for chunk tracking
+    private var chunkCounter = 0
+    private val CHUNK_SIZE_THRESHOLD = 50 * 1024L // 50KB in bytes - changed to Long with L suffix
+    private var lastProcessedSize = 0L
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/wav"
     private var audioFormat: Int = AudioFormat.ENCODING_PCM_16BIT
+
+    // 創建新的實例變數，用於跟踪最後一個塊文件以及最後一次塊創建的時間
+    private var lastChunkFile: File? = null
+    private var lastChunkCreationTime: Long = 0
+
+    // 添加一個集合來跟踪已發送的塊索引
+    private val sentChunkIndices = mutableSetOf<Int>()
+    private var sentFinalChunk = false
+    
+    // 添加跟踪最終塊信息的變量
+    private var finalChunkFileUri: String? = null
+    private var finalChunkIndex: Int = -1
 
     @RequiresApi(Build.VERSION_CODES.R)
     fun startRecording(options: Map<String, Any?>, promise: Promise) {
@@ -89,21 +116,17 @@ class AudioRecorderManager(
         }
 
         // Set encoding and file extension
-        var fileExtension = ".wav"
         audioFormat = when (tempRecordingConfig.encoding) {
             "pcm_8bit" -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_PCM_8BIT
             }
             "pcm_16bit" -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_PCM_16BIT
             }
             "pcm_32bit" -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_PCM_FLOAT
             }
             "opus" -> {
@@ -115,18 +138,15 @@ class AudioRecorderManager(
                     )
                     return
                 }
-                fileExtension = "opus"
                 mimeType = "audio/opus"
                 AudioFormat.ENCODING_OPUS
             }
             "aac_lc" -> {
-                fileExtension = "aac"
                 mimeType = "audio/aac"
                 AudioFormat.ENCODING_AAC_LC
             }
             else -> {
-                fileExtension = "wav"
-                mimeType = "audio/wav"
+                mimeType = "audio/pcm"
                 AudioFormat.ENCODING_DEFAULT
             }
         }
@@ -145,20 +165,7 @@ class AudioRecorderManager(
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
 
-
-        // Check if selected audio format is supported
-        if (!isAudioFormatSupported(tempRecordingConfig.sampleRate, tempRecordingConfig.channels, audioFormat)) {
-            Log.e(Constants.TAG, "Selected audio format not supported, falling back to 16-bit PCM")
-            audioFormat = AudioFormat.ENCODING_PCM_16BIT
-            if (!isAudioFormatSupported(tempRecordingConfig.sampleRate, tempRecordingConfig.channels, audioFormat)) {
-                promise.reject("INITIALIZATION_FAILED", "Failed to initialize audio recorder with any supported format", null)
-                return
-            }
-            tempRecordingConfig = tempRecordingConfig.copy(encoding = "pcm_16bit")
-        }
-
-        // Update recordingConfig with potentially new encoding
-        recordingConfig = tempRecordingConfig
+        interval = recordingConfig.interval
 
         // Recalculate bufferSizeInBytes if the format has changed
         bufferSizeInBytes = AudioRecord.getMinBufferSize(
@@ -196,20 +203,78 @@ class AudioRecorderManager(
         }
 
         streamUuid = java.util.UUID.randomUUID().toString()
-        audioFile = File(filesDir, "audio_${streamUuid}.${fileExtension}")
+        webmFile = File(filesDir, "audio_${streamUuid}.mp4")
+        
+        // Reset the PCM buffer
+        pcmBuffer.reset()
+        
+        // Reset chunk tracking
+        chunkCounter = 0
+        lastChunkFile = null
+        lastChunkCreationTime = 0
+        lastProcessedSize = 0L
+        sentChunkIndices.clear()
+        sentFinalChunk = false
+        
+        // 重置最終塊信息
+        finalChunkFileUri = null
+        finalChunkIndex = -1
 
+        // Set up FFmpeg pipe for WebM conversion
         try {
-            FileOutputStream(audioFile, true).use { fos ->
-                audioFileHandler.writeWavHeader(fos, recordingConfig.sampleRate, recordingConfig.channels, when (recordingConfig.encoding) {
-                    "pcm_8bit" -> 8
-                    "pcm_16bit" -> 16
-                    "pcm_32bit" -> 32
-                    else -> 16 // Default to 16 if the encoding is not recognized
-                })
+            // 1. Create pipe
+            ffmpegPipe = FFmpegKitConfig.registerNewFFmpegPipe(context)
+            Log.d(Constants.TAG, "Created FFmpeg pipe: $ffmpegPipe")
+            
+            // 2. Build FFmpeg command to encode to WebM
+            val bitDepth = when (recordingConfig.encoding) {
+                "pcm_8bit" -> 8
+                "pcm_16bit" -> 16
+                "pcm_32bit" -> 32
+                else -> 16
             }
-        } catch (e: IOException) {
-            promise.reject("FILE_CREATION_FAILED", "Failed to create the audio file", e)
-            return
+            
+            val pcmFormat = when (bitDepth) {
+                8 -> "u8"
+                16 -> "s16le"
+                32 -> "f32le"
+                else -> "s16le"
+            }
+            
+            // Safely get the webmFile path
+            val webmFilePath = webmFile?.absolutePath ?: run {
+                Log.e(Constants.TAG, "WebM file path is null")
+                throw IOException("WebM file path is null")
+            }
+
+            // add a few tolerance to the fragDuration
+            val fragDuration = interval * 1000 + 1000 // microseconds
+            
+            val ffmpegCommand = "-f $pcmFormat -ar ${recordingConfig.sampleRate} -ac ${recordingConfig.channels} " +
+                    "-i $ffmpegPipe -c:a aac -b:a 128k -flush_packets 1 -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration $fragDuration $webmFilePath"
+                    // "-f $pcmFormat -ar ${recordingConfig.sampleRate} -ac ${recordingConfig.channels} -i $ffmpegPipe -c:a aac -b:a 128k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 100000 $webmFilePath"
+            
+            // 3. Execute FFmpeg command
+            FFmpegKit.executeAsync(ffmpegCommand, { session ->
+                val returnCode = session.returnCode
+                Log.d(Constants.TAG, "FFmpeg session completed with return code: $returnCode")
+                if (ReturnCode.isSuccess(returnCode)) {
+                    Log.d(Constants.TAG, "WebM conversion successful")
+                } else if (ReturnCode.isCancel(returnCode)) {
+                    Log.d(Constants.TAG, "WebM conversion canceled")
+                } else {
+                    Log.e(Constants.TAG, "WebM conversion failed: ${session.failStackTrace}")
+                }
+            }, { log ->
+                Log.d(Constants.TAG, "FFmpeg log: ${log.message}")
+            }, null)
+            
+            // Open pipe for writing
+            pipeFos = ffmpegPipe?.let { FileOutputStream(it) }
+            
+        } catch (e: Exception) {
+            Log.e(Constants.TAG, "Failed to set up FFmpeg pipe", e)
+            // Continue even if WebM setup fails
         }
 
         audioRecord?.startRecording()
@@ -217,14 +282,13 @@ class AudioRecorderManager(
         isRecording.set(true)
 
         if (!isPaused.get()) {
-            recordingStartTime =
-                System.currentTimeMillis() // Only reset start time if it's not a resume
+            recordingStartTime = System.currentTimeMillis() // Only reset start time if it's not a resume
         }
 
         recordingThread = Thread { recordingProcess() }.apply { start() }
 
         val result = bundleOf(
-            "fileUri" to audioFile?.toURI().toString(),
+            "webmFileUri" to webmFile?.toURI().toString(),
             "channels" to recordingConfig.channels,
             "bitDepth" to when (recordingConfig.encoding) {
                 "pcm_8bit" -> 8
@@ -288,12 +352,28 @@ class AudioRecorderManager(
                 Log.d(Constants.TAG, "Last Read $bytesRead bytes")
                 if (bytesRead > 0) {
                     emitAudioData(audioData, bytesRead)
+                    // Write final data to pipe
+                    pipeFos?.write(audioData, 0, bytesRead)
                 }
+                
+                // 直接處理最後一個塊，標記為最後一個
+                processLastChunk()
 
                 Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")
                 if (audioRecord != null && audioRecord!!.state == AudioRecord.STATE_INITIALIZED) {
                     Log.d(Constants.TAG, "Stopping AudioRecord");
                     audioRecord!!.stop()
+                }
+                
+                // Close the pipe
+                try {
+                    pipeFos?.close()
+                    ffmpegPipe?.let {
+                        FFmpegKitConfig.closeFFmpegPipe(it)
+                        Log.d(Constants.TAG, "Closed FFmpeg pipe: $it")
+                    }
+                } catch (e: Exception) {
+                    Log.e(Constants.TAG, "Error closing FFmpeg pipe", e)
                 }
             } catch (e: IllegalStateException) {
                 Log.e(Constants.TAG, "Error reading from AudioRecord", e);
@@ -302,21 +382,19 @@ class AudioRecorderManager(
             }
 
             try {
-                val fileSize = audioFile?.length() ?: 0
-                val dataFileSize = fileSize - 44  // Subtract header size
+                // Calculate duration based on total data size and byte rate
                 val byteRate = recordingConfig.sampleRate * recordingConfig.channels * when (recordingConfig.encoding) {
                     "pcm_8bit" -> 1
                     "pcm_16bit" -> 2
                     "pcm_32bit" -> 4
                     else -> 2 // Default to 2 bytes per sample if the encoding is not recognized
                 }
-                // Calculate duration based on the data size and byte rate
-                val duration = if (byteRate > 0) (dataFileSize * 1000 / byteRate) else 0
+                val duration = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
 
                 // Create result bundle
-                val result = bundleOf(
-                    "fileUri" to audioFile?.toURI().toString(),
-                    "filename" to audioFile?.name,
+                val resultBuilder = bundleOf(
+                    "webmFileUri" to webmFile?.toURI().toString(),
+                    "filename" to webmFile?.name,
                     "durationMs" to duration,
                     "channels" to recordingConfig.channels,
                     "bitDepth" to when (recordingConfig.encoding) {
@@ -326,16 +404,40 @@ class AudioRecorderManager(
                         else -> 16 // Default to 16 if the encoding is not recognized
                     },
                     "sampleRate" to recordingConfig.sampleRate,
-                    "size" to fileSize,
+                    "size" to totalDataSize,
                     "mimeType" to mimeType
                 )
-                promise.resolve(result)
+                
+                // JavaScript端現在已經依賴於通過onAudioChunkUpdate事件接收最終塊的信息（isLastChunk=true）
+                // 因此我們不需要在結果對象中包含這些信息，但保留注釋以供參考
+                // 如果將來需要修改為在結果中包含這些信息，取消下面的註釋：
+                /*
+                if (finalChunkFileUri != null && finalChunkIndex >= 0) {
+                    resultBuilder.putString("finalChunkFileUri", finalChunkFileUri)
+                    resultBuilder.putInt("finalChunkIndex", finalChunkIndex)
+                }
+                */
+                
+                promise.resolve(resultBuilder)
 
                 // Reset the timing variables
                 isRecording.set(false)
                 isPaused.set(false)
                 totalRecordedTime = 0
                 pausedDuration = 0
+                totalDataSize = 0
+                pcmBuffer.reset()
+                
+                // Reset chunk tracking
+                chunkCounter = 0
+                lastChunkFile = null
+                lastChunkCreationTime = 0
+                sentChunkIndices.clear()
+                sentFinalChunk = false
+                
+                // 重置最終塊信息
+                finalChunkFileUri = null
+                finalChunkIndex = -1
             } catch (e: Exception) {
                 Log.d(Constants.TAG, "Failed to stop recording", e)
                 promise.reject("STOP_FAILED", "Failed to stop recording", e)
@@ -390,18 +492,15 @@ class AudioRecorderManager(
                 )
             }
 
-            // Ensure you update this to check if audioFile is null or not
-            val fileSize = audioFile?.length() ?: 0
-
-            val duration = when (mimeType) {
-                "audio/wav" -> {
-                    val dataFileSize = fileSize - Constants.WAV_HEADER_SIZE // Assuming header is always 44 bytes
-                    val byteRate = recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8
-                    if (byteRate > 0) dataFileSize * 1000 / byteRate else 0
-                }
-                "audio/opus", "audio/aac" -> getCompressedAudioDuration(audioFile)
-                else -> 0
+            // Calculate duration based on total data size and byte rate
+            val byteRate = recordingConfig.sampleRate * recordingConfig.channels * when (recordingConfig.encoding) {
+                "pcm_8bit" -> 1
+                "pcm_16bit" -> 2
+                "pcm_32bit" -> 4
+                else -> 2
             }
+            val duration = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
+            
             return bundleOf(
                 "durationMs" to duration,
                 "isRecording" to isRecording.get(),
@@ -427,90 +526,189 @@ class AudioRecorderManager(
 
     private fun recordingProcess() {
         Log.i(Constants.TAG, "Starting recording process...")
-        FileOutputStream(audioFile, true).use { fos ->
-            // Buffer to accumulate data
-            val accumulatedAudioData = ByteArrayOutputStream()
-            audioFileHandler.writeWavHeader(
-                accumulatedAudioData,
-                recordingConfig.sampleRate,
-                recordingConfig.channels,
-                when (recordingConfig.encoding) {
-                    "pcm_8bit" -> 8
-                    "pcm_16bit" -> 16
-                    "pcm_32bit" -> 32
-                    else -> 16 // Default to 16 if the encoding is not recognized
-                }
-            )
-            // Write audio data directly to the file
-            val audioData = ByteArray(bufferSizeInBytes)
-            Log.d(Constants.TAG, "Entering recording loop")
-            while (isRecording.get() && !Thread.currentThread().isInterrupted) {
-                if (isPaused.get()) {
-                    // If recording is paused, skip reading from the microphone
-                    continue
-                }
+        
+        // Buffer to accumulate data
+        val accumulatedAudioData = ByteArrayOutputStream()
+        
+        // Write audio data directly to the memory buffer
+        val audioData = ByteArray(bufferSizeInBytes)
+        Log.d(Constants.TAG, "Entering recording loop")
+        while (isRecording.get() && !Thread.currentThread().isInterrupted) {
+            if (isPaused.get()) {
+                // If recording is paused, skip reading from the microphone
+                continue
+            }
 
-                val bytesRead = synchronized(audioRecordLock) {
-                    // Only synchronize the read operation and the check
-                    audioRecord?.let {
-                        if (it.state != AudioRecord.STATE_INITIALIZED) {
-                            Log.e(Constants.TAG, "AudioRecord not initialized")
-                            return@let -1
-                        }
-                        it.read(audioData, 0, bufferSizeInBytes).also { bytes ->
-                            if (bytes < 0) {
-                                Log.e(Constants.TAG, "AudioRecord read error: $bytes")
-                            }
-                        }
-                    } ?: -1 // Handle null case
-                }
-                if (bytesRead > 0) {
-                    fos.write(audioData, 0, bytesRead)
-                    totalDataSize += bytesRead
-                    accumulatedAudioData.write(audioData, 0, bytesRead)
-
-                    // Emit audio data at defined intervals
-                    if (SystemClock.elapsedRealtime() - lastEmitTime >= interval) {
-                        emitAudioData(
-                            accumulatedAudioData.toByteArray(),
-                            accumulatedAudioData.size()
-                        )
-                        lastEmitTime = SystemClock.elapsedRealtime() // Reset the timer
-                        accumulatedAudioData.reset() // Clear the accumulator
+            val bytesRead = synchronized(audioRecordLock) {
+                // Only synchronize the read operation and the check
+                audioRecord?.let {
+                    if (it.state != AudioRecord.STATE_INITIALIZED) {
+                        Log.e(Constants.TAG, "AudioRecord not initialized")
+                        return@let -1
                     }
+                    it.read(audioData, 0, bufferSizeInBytes).also { bytes ->
+                        if (bytes < 0) {
+                            Log.e(Constants.TAG, "AudioRecord read error: $bytes")
+                        }
+                    }
+                } ?: -1 // Handle null case
+            }
+            if (bytesRead > 0) {
+                totalDataSize += bytesRead
+                accumulatedAudioData.write(audioData, 0, bytesRead)
+                pcmBuffer.write(audioData, 0, bytesRead)
 
-                    Log.d(Constants.TAG, "Bytes written to file: $bytesRead")
+                // Write data to FFmpeg pipe
+                try {
+                    pipeFos?.write(audioData, 0, bytesRead)
+                    pipeFos?.flush()
+                    
+                    // 在每次寫入 pipe 後嘗試創建並發送音頻塊
+                    createAndEmitAudioChunk()
+                } catch (e: Exception) {
+                    Log.e(Constants.TAG, "Error writing to FFmpeg pipe", e)
                 }
+
+                // Emit audio data at defined intervals
+                if (SystemClock.elapsedRealtime() - lastEmitTime >= interval) {
+                    emitAudioData(
+                        accumulatedAudioData.toByteArray(),
+                        accumulatedAudioData.size()
+                    )
+                    lastEmitTime = SystemClock.elapsedRealtime() // Reset the timer
+                    accumulatedAudioData.reset() // Clear the accumulator
+                }
+
+                Log.d(Constants.TAG, "Bytes read: $bytesRead")
             }
         }
-        // Update the WAV header to reflect the actual data size
-        audioFile?.let { file ->
-            audioFileHandler.updateWavHeader(file)
+    }
+
+    private fun createAndEmitAudioChunk() {
+        webmFile?.let { sourceFile ->
+            if (!sourceFile.exists()) {
+                Log.d(Constants.TAG, "WebM file does not exist, skipping chunk creation")
+                return
+            }
+            
+            val currentTime = SystemClock.elapsedRealtime()
+            // 確保我們按照設定的時間間隔創建塊
+            if (currentTime - lastChunkCreationTime < interval) {
+                Log.d(Constants.TAG, "Not enough time elapsed for new chunk (${currentTime - lastChunkCreationTime}ms < ${interval}ms)")
+                return // 尚未達到間隔時間
+            }
+            
+            try {
+                // 創建新的塊文件
+                val chunkFileName = "chunk_${streamUuid}_${chunkCounter}.mp4"
+                val chunkFile = File(filesDir, chunkFileName)
+                
+                // 複製當前的文件內容到塊文件
+                sourceFile.copyTo(chunkFile, overwrite = true)
+                
+                // 更新最後創建的塊文件和時間
+                lastChunkFile = chunkFile
+                lastChunkCreationTime = currentTime
+                
+                Log.d(Constants.TAG, "Creating chunk ${chunkCounter}, sentChunkIndices: $sentChunkIndices")
+                
+                // 發送事件
+                emitChunkUpdate(chunkFile, chunkCounter, false)
+                
+                // 記錄已發送的塊索引
+                sentChunkIndices.add(chunkCounter)
+                
+                // 增加塊計數器
+                chunkCounter++
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Error creating audio chunk", e)
+            }
+        }
+    }
+
+    private fun processLastChunk() {
+        if (webmFile != null && !sentFinalChunk) {
+            // 使用當前的索引（而非chunkCounter-1）創建一個新的最終塊
+            Log.d(Constants.TAG, "Creating a new final chunk with index $chunkCounter, existing sentChunkIndices: $sentChunkIndices")
+            
+            try {
+                // 創建新的最終塊文件
+                val finalChunkFileName = "chunk_${streamUuid}_${chunkCounter}.mp4"
+                val finalChunkFile = File(filesDir, finalChunkFileName)
+                
+                // 複製當前的文件內容到最終塊文件
+                webmFile?.copyTo(finalChunkFile, overwrite = true)
+                
+                // 保存最終塊文件信息
+                finalChunkFileUri = finalChunkFile.toURI().toString()
+                finalChunkIndex = chunkCounter
+                
+                // 發送標記為最終塊的事件
+                mainHandler.post {
+                    try {
+                        eventSender.sendExpoEvent(
+                            Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME, bundleOf(
+                                "chunkFileUri" to finalChunkFile.toURI().toString(),
+                                "chunkIndex" to chunkCounter,
+                                "streamUuid" to streamUuid,
+                                "isLastChunk" to true
+                            )
+                        )
+                        Log.d(Constants.TAG, "Created and marked NEW chunk $chunkCounter as final chunk")
+                        sentFinalChunk = true
+                        // 不要增加chunkCounter，因為我們已經停止錄音了
+                    } catch (e: Exception) {
+                        Log.e(Constants.TAG, "Failed to send final chunk update event", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Error creating final audio chunk", e)
+            }
+        } else {
+            Log.d(Constants.TAG, "Skipping processLastChunk as final chunk was already sent (sentFinalChunk: $sentFinalChunk) or no webm file created (webmFile: ${webmFile != null})")
+        }
+    }
+
+    private fun emitChunkUpdate(chunkFile: File, chunkIndex: Int, isLastChunk: Boolean) {
+        mainHandler.post {
+            try {
+                eventSender.sendExpoEvent(
+                    Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME, bundleOf(
+                        "chunkFileUri" to chunkFile.toURI().toString(),
+                        "chunkIndex" to chunkIndex,
+                        "streamUuid" to streamUuid,
+                        "isLastChunk" to isLastChunk
+                    )
+                )
+                Log.d(Constants.TAG, "Emitted chunk update event for chunk $chunkIndex, isLastChunk: $isLastChunk, URI: ${chunkFile.toURI()}")
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Failed to send chunk update event", e)
+            }
         }
     }
 
     private fun emitAudioData(audioData: ByteArray, length: Int) {
         val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
 
-        val fileSize = audioFile?.length() ?: 0
-        val from = lastEmittedSize
-        val deltaSize = fileSize - lastEmittedSize
-        lastEmittedSize = fileSize
-
-        // Calculate position in milliseconds
-        val positionInMs = (from * 1000) / (recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 8 else 16) / 8)
+        // Calculate position in milliseconds based on total data processed
+        val byteRate = recordingConfig.sampleRate * recordingConfig.channels * when (recordingConfig.encoding) {
+            "pcm_8bit" -> 1
+            "pcm_16bit" -> 2
+            "pcm_32bit" -> 4
+            else -> 2
+        }
+        val positionInMs = if (byteRate > 0) (totalDataSize * 1000 / byteRate) else 0
 
         mainHandler.post {
             try {
                 eventSender.sendExpoEvent(
                     Constants.AUDIO_EVENT_NAME, bundleOf(
-                        "fileUri" to audioFile?.toURI().toString(),
-                        "lastEmittedSize" to from,
+                        "webmFileUri" to webmFile?.toURI().toString(),
                         "encoded" to encodedBuffer,
                         "deltaSize" to length,
                         "position" to positionInMs,
                         "mimeType" to mimeType,
-                        "totalSize" to fileSize,
+                        "totalSize" to totalDataSize,
                         "streamUuid" to streamUuid
                     )
                 )

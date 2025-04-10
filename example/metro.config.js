@@ -22,7 +22,10 @@ config.resolver.extraNodeModules = {
   "@mykin-ai/expo-audio-stream": "..",
 };
 
-config.watchFolders = [path.resolve(__dirname, "..")];
+config.watchFolders = [
+  path.resolve(__dirname, "../build"),
+  path.resolve(__dirname, "../src"),
+];
 
 config.transformer.getTransformOptions = async () => ({
   transform: {

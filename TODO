@@ -1,0 +1,12 @@
+TODOs
+
+- [ ] remove all playing logic (native modules)
+- [ ] save chunks
+- [ ] method to cleanup chunk & temporary files
+- [ ] check random-range-chunk concat
+- [ ] encode audio container format
+- [ ] check permissions
+- [ ] check background mode
+- [ ] check memory management
+- [ ] check thread safety
+
