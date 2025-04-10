@@ -18,7 +18,27 @@ const ANDROID_SAMPLE_RATE = 48000;
 const IOS_SAMPLE_RATE = 48000;
 const CHANNELS = 2;
 const ENCODING = "pcm_16bit";
-const RECORDING_INTERVAL = 3 * 1000;
+const RECORDING_INTERVAL = 4 * 1000;
+
+const concatFileBufferAndSaveToFile = async (
+  fileUris: string[],
+  targetFileUri: string
+) => {
+  let fileBuffer = await FileSystem.readAsStringAsync(fileUris[0], {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  for (const fileUri of fileUris.slice(1)) {
+    const _fileBuffer = await FileSystem.readAsStringAsync(fileUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    fileBuffer += _fileBuffer;
+  }
+
+  await FileSystem.writeAsStringAsync(targetFileUri, fileBuffer, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+};
 
 export default function CustomRecorder() {
   const eventListenerSubscriptionRef = useRef<Subscription | undefined>(
@@ -27,7 +47,7 @@ export default function CustomRecorder() {
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
 
-  const [webMRecordingUri, setWebMRecordingUri] = useState<string | null>(null);
+  const [mp4RecordingUri, setMp4RecordingUri] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -36,13 +56,9 @@ export default function CustomRecorder() {
   const outputFileRef = useRef<string | null>(null);
   const tempChunkCounter = useRef<number>(0);
   const [chunks, setChunks] = useState<
-    {
-      chunkFileUri: string;
-      chunkIndex: number;
-      streamUuid: string;
-      isLastChunk: boolean;
-    }[]
+    { position: number; fileUri: string; size: number }[]
   >([]);
+  const [concatFileUri, setConcatFileUri] = useState<string | null>(null);
   const [mp4Chunks, setMp4Chunks] = useState<string[]>([]);
   const uploader = useRef<Uploader | null>(null);
 
@@ -253,7 +269,7 @@ export default function CustomRecorder() {
               event.isLastChunk
             );
 
-            setChunks((prev) => [...prev, event]);
+            setMp4Chunks((prev) => [...prev, event.chunkFileUri]);
 
             if (uploader.current) {
               uploader.current.addChunk({
@@ -269,7 +285,7 @@ export default function CustomRecorder() {
         });
 
       if (recordingResult.webmFileUri) {
-        setWebMRecordingUri(recordingResult.webmFileUri);
+        setMp4RecordingUri(recordingResult.webmFileUri);
 
         // setInterval(() => {
         //   FileSystem.getInfoAsync(recordingResult.webmFileUri || "").then(
@@ -355,6 +371,43 @@ export default function CustomRecorder() {
           title="Stop Recording"
           disabled={!isRecording}
         />
+        <Button
+          onPress={async () => {
+            const fileUri = `${FileSystem.cacheDirectory}/concat-${Date.now()}.mp4`;
+            await concatFileBufferAndSaveToFile(mp4Chunks, fileUri);
+            setConcatFileUri(fileUri);
+          }}
+          title="Concatenate and Save"
+          disabled={isRecording}
+        />
+        <Button
+          title="Share"
+          disabled={!concatFileUri}
+          onPress={async () => {
+            if (!concatFileUri) {
+              return;
+            }
+
+            let shareableUri = concatFileUri;
+
+            if (!concatFileUri.startsWith(FileSystem.cacheDirectory!)) {
+              const fileInfo = await FileSystem.getInfoAsync(concatFileUri);
+              if (fileInfo.exists) {
+                const fileName = concatFileUri.split("/").pop();
+                const destinationUri = `${FileSystem.cacheDirectory}${fileName}`;
+
+                await FileSystem.copyAsync({
+                  from: concatFileUri,
+                  to: destinationUri,
+                });
+
+                shareableUri = destinationUri;
+              }
+            }
+
+            await Sharing.shareAsync(shareableUri);
+          }}
+        />
       </View>
 
       <View style={styles.buttonGroup}>
@@ -374,17 +427,17 @@ export default function CustomRecorder() {
       </View>
 
       <View style={styles.buttonGroup}>
-        {webMRecordingUri && (
+        {mp4RecordingUri && (
           <View style={styles.mergedAudio}>
-            <Text style={styles.sectionTitle}>WebM Audio</Text>
-            <Text>URL: {webMRecordingUri}</Text>
+            <Text style={styles.sectionTitle}>MP4 Audio</Text>
+            <Text>URL: {mp4RecordingUri}</Text>
             <View style={styles.buttonRow}>
               <Button
-                onPress={() => playAudio(webMRecordingUri)}
+                onPress={() => playAudio(mp4RecordingUri)}
                 title="Play MP4 Audio"
               />
               <Button
-                onPress={() => shareAudio(webMRecordingUri)}
+                onPress={() => shareAudio(mp4RecordingUri)}
                 title="Share"
               />
             </View>
@@ -392,7 +445,7 @@ export default function CustomRecorder() {
         )}
       </View>
 
-      {/* <View style={styles.chunkList}>
+      <View style={styles.chunkList}>
         <Text style={styles.sectionTitle}>MP4 Chunks ({mp4Chunks.length})</Text>
         {mp4Chunks.map((chunk, index) => (
           <View
@@ -426,32 +479,30 @@ export default function CustomRecorder() {
             />
           </View>
         ))}
-      </View> */}
+      </View>
       <View style={styles.chunkList}>
         <Text style={styles.sectionTitle}>Audio Chunks ({chunks.length})</Text>
         {chunks.map((chunk) => (
           <View
-            key={chunk.chunkFileUri}
+            key={chunk.fileUri}
             style={{ display: "flex", flexDirection: "row", gap: 20 }}
           >
-            <Text>{chunk.chunkIndex}</Text>
-            <Text>{chunk.isLastChunk}</Text>
+            <Text>{chunk.position}</Text>
+            <Text>{chunk.size}</Text>
             <Button
               title="Share"
               onPress={async () => {
-                let shareableUri = chunk.chunkFileUri;
+                let shareableUri = chunk.fileUri;
 
-                if (!chunk.chunkFileUri.startsWith(FileSystem.cacheDirectory!)) {
-                  const fileInfo = await FileSystem.getInfoAsync(
-                    chunk.chunkFileUri
-                  );
+                if (!chunk.fileUri.startsWith(FileSystem.cacheDirectory!)) {
+                  const fileInfo = await FileSystem.getInfoAsync(chunk.fileUri);
                   if (fileInfo.exists) {
-                    const fileExtension = chunk.chunkFileUri.split(".").pop();
+                    const fileExtension = chunk.fileUri.split(".").pop();
                     const fileName = `share-audio-${Date.now()}.${fileExtension}`;
                     const destinationUri = `${FileSystem.cacheDirectory}${fileName}`;
 
                     await FileSystem.copyAsync({
-                      from: chunk.chunkFileUri,
+                      from: chunk.fileUri,
                       to: destinationUri,
                     });
 

@@ -41,17 +41,22 @@ class Microphone {
     private var audioChunkCounter: Int = 0
     private var streamUuid: String = ""
     private var mp4File: URL?
-    private var lastAudioChunkSize: Int64 = 0
-    // @TODO remove thiss
-    private var lastAudioChunkTime: Date? = nil
-    private var lastAudioChunkUri: String? = nil
+    private var lastAudioChunkSize: Int64 = 0 // 記錄上一次處理的文件大小
+    private var fileMonitor: DispatchSourceFileSystemObject?
+    private var isPipeClosed: Bool = false // 記錄pipe是否已關閉
     
     // 添加一個映射來跟踪哪些塊已經發送過
     private var sentChunkIndices = Set<Int>()
     
-    // 添加屬性來跟踪最終塊
-    private var finalChunkFileUri: String? = nil
-    private var finalChunkIndex: Int = 0
+    // FFmpeg 完成狀態
+    private var isFFmpegCompleted: Bool = false
+    
+    // 用於檔案監控的debounce
+    private var fileChangeDebounceTimer: Timer?
+    private var chunkCreationDebounceTimer: Timer?
+    
+    // 標記是否需要處理最後的塊
+    private var needFinalChunk: Bool = false
     
     init() {
         NotificationCenter.default.addObserver(
@@ -109,21 +114,15 @@ class Microphone {
         let mp4FileUrl = documentsDirectory.appendingPathComponent(mp4FileName)
         mp4File = mp4FileUrl
         
-
-        // 重置音頻塊跟踪集合
+        // 重置所有狀態
         sentChunkIndices.removeAll()
-        // 重置音頻塊計數器
         audioChunkCounter = 0
         lastAudioChunkSize = 0
-        lastAudioChunkTime = nil
-        lastAudioChunkUri = nil
-        // 重置音頻塊跟踪
-        audioChunkCounter = 0
-        // lastAudioChunkTime = nil
+        isPipeClosed = false
+        isFFmpegCompleted = false
         
-        // 重置最終塊信息
-        finalChunkFileUri = nil
-        finalChunkIndex = 0
+        // 創建一個空文件 - 這樣我們可以監聽它
+        fileManager.createFile(atPath: mp4FileUrl.path, contents: nil)
         
         // Register a new FFmpeg pipe
         guard let pipe = FFmpegKitConfig.registerNewFFmpegPipe() else {
@@ -150,19 +149,73 @@ class Microphone {
             format = "s16le" // Default to 16-bit
         }
         
-        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a aac -b:a 128k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 100000 \"\(mp4FileUrl.path)\""
+        // 使用 -y 參數強制覆蓋已存在的文件
+        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a aac -b:a 128k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 100000 -y \"\(mp4FileUrl.path)\""
         Logger.debug("[Microphone] Starting FFmpeg with command: \(ffmpegCommand)")
         
-        // @TODO error handling
-        ffmpegSession = FFmpegKit.executeAsync(ffmpegCommand) { session in
-            if let returnCode = session?.getReturnCode(), returnCode.isValueSuccess() {
-                Logger.debug("[Microphone] FFmpeg process completed successfully")
+        // 設置FFmpeg會話並處理完成回調
+        ffmpegSession = FFmpegKit.executeAsync(ffmpegCommand) { [weak self] session in
+            guard let self = self else { return }
+            
+            let state = session?.getState() ?? .failed
+            let returnCode = session?.getReturnCode()
+            
+            // 檢查退出程序
+            let exitCode = returnCode?.getValue() ?? -1
+            let exitingNormally = session?.getOutput()?.contains("Exiting normally") ?? false
+            
+            if let returnCode = returnCode, returnCode.isValueSuccess() {
+                Logger.debug("[Microphone] FFmpeg process completed successfully with return code: \(returnCode.getValue())")
+                
+                DispatchQueue.main.async {
+                    self.isFFmpegCompleted = true
+                    
+                    // 如果檔案還在監控中，則發送最後一個塊
+                    if self.fileMonitor != nil {
+                        Logger.debug("[Microphone] FFmpeg completed, sending final chunk")
+                        self.createAndEmitAudioChunk(isLastChunk: true)
+                    }
+                }
+            } else if exitingNormally {
+                // 正常取消的情況
+                Logger.debug("[Microphone] FFmpeg process cancelled normally with exit code: \(exitCode)")
+                
+                DispatchQueue.main.async {
+                    self.isFFmpegCompleted = true
+                    
+                    // 確保在取消後也發送最後一個塊
+                    if self.fileMonitor != nil {
+                        Logger.debug("[Microphone] FFmpeg cancelled, sending final chunk")
+                        self.needFinalChunk = true
+                        self.createAndEmitAudioChunk(isLastChunk: true)
+                    }
+                }
             } else {
-                Logger.debug("[Microphone] FFmpeg process failed: \(session?.getFailStackTrace() ?? "Unknown error")")
+                let failStackTrace = session?.getFailStackTrace() ?? "Unknown error"
+                Logger.debug("[Microphone] FFmpeg process failed with state \(state): \(failStackTrace)")
+                
+                DispatchQueue.main.async {
+                    self.isFFmpegCompleted = true
+                    
+                    // 即使是真正的錯誤也嘗試發送最後一個塊
+                    if self.fileMonitor != nil && self.needFinalChunk {
+                        Logger.debug("[Microphone] FFmpeg failed but still sending final chunk")
+                        self.createAndEmitAudioChunk(isLastChunk: true)
+                    } else if self.fileMonitor != nil {
+                        self.fileMonitor?.cancel()
+                        self.fileMonitor = nil
+                        Logger.debug("[Microphone] File monitoring stopped after FFmpeg failure")
+                    }
+                }
             }
         } withLogCallback: { log in
-            Logger.debug("[Microphone] FFmpeg log: \(log?.getMessage() ?? "")")
+            let message = log?.getMessage() ?? ""
+            // 只記錄重要的日誌，過濾掉冗長的統計信息
+            if !message.contains("frame=") && !message.contains("fps=") {
+                Logger.debug("[Microphone] FFmpeg log: \(message)")
+            }
         } withStatisticsCallback: { statistics in
+            // 可以使用統計回調來監控處理進度
         }
         
         self.ffmpegPipeFileHandle = FileHandle(forWritingAtPath: pipe)
@@ -171,112 +224,242 @@ class Microphone {
             return nil
         }
         
+        // 設置文件監聽
+        setupFileMonitoring(for: mp4FileUrl)
+        
         // Return the WebM file URI
         webmFileUri = mp4FileUrl.absoluteString
         return mp4FileUrl.absoluteString
     }
     
+    // 設置文件監聽
+    private func setupFileMonitoring(for fileURL: URL) {
+        // 關閉之前的監聽（如果有）
+        fileMonitor?.cancel()
+        fileMonitor = nil
+        
+        // 打開文件以獲取文件描述符
+        guard let fileHandle = try? FileHandle(forReadingFrom: fileURL),
+              let fileDescriptor = try? fileHandle.fileDescriptor else {
+            Logger.debug("[Microphone] Failed to get file descriptor for monitoring")
+            return
+        }
+        
+        // 創建文件系統監聽
+        let monitor = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileDescriptor,
+            eventMask: .write, // 監聽文件寫入事件
+            queue: DispatchQueue.global(qos: .background)
+        )
+        
+        // 設置事件處理程序
+        monitor.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.handleFileChange()
+        }
+        
+        // 設置取消處理程序
+        monitor.setCancelHandler {
+            try? fileHandle.close()
+        }
+        
+        // 啟動監聽
+        monitor.resume()
+        fileMonitor = monitor
+        Logger.debug("[Microphone] File monitoring started for \(fileURL.lastPathComponent)")
+    }
+    
+    // 處理文件變化 - 使用debounce避免頻繁觸發
+    private func handleFileChange() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // 取消先前的timer
+            self.fileChangeDebounceTimer?.invalidate()
+            
+            // 設置新的timer（300毫秒的debounce時間）
+            self.fileChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+                guard let self = self, !self.isFFmpegCompleted else { return }
+                
+                // 創建並發送塊
+                self.createAndEmitAudioChunk(isLastChunk: false)
+            }
+        }
+    }
+    
     private func closeFFmpegPipe() {
-        // @FIXME should send the last chunk notification after closing the pipe
-        // 確保有最後一個塊再發送通知
-        if lastAudioChunkUri != nil {
-            // 發送最後一個塊的通知（如果有）
-            sendLastChunkNotification()
+        // 標記pipe已關閉
+        isPipeClosed = true
+        Logger.debug("[Microphone] Marking FFmpeg pipe as closed")
+        
+        // 標記需要處理最後一個塊
+        needFinalChunk = true
+        
+        // 確保所有數據都已寫入
+        if let fileHandle = ffmpegPipeFileHandle {
+            fileHandle.synchronizeFile()
+            fileHandle.closeFile()
+            ffmpegPipeFileHandle = nil
+            Logger.debug("[Microphone] FFmpeg pipe file handle closed")
         }
         
         if let pipe = ffmpegPipe {
-            ffmpegPipeFileHandle?.closeFile()
-            ffmpegPipeFileHandle = nil
-            
             FFmpegKitConfig.closeFFmpegPipe(pipe)
             ffmpegPipe = nil
             Logger.debug("[Microphone] FFmpeg pipe closed")
         }
         
-        if let session = ffmpegSession, session.getState() != .completed && session.getState() != .failed {
-            FFmpegKit.cancel(session.getId())
-            Logger.debug("[Microphone] FFmpeg session cancelled")
-        }
-        ffmpegSession = nil
-
-    }
-    
-    // 發送最後一個塊的通知
-    private func sendLastChunkNotification() {
-        guard let webmFile = mp4File, FileManager.default.fileExists(atPath: webmFile.path) else {
-            return
+        if let session = ffmpegSession {
+            let state = session.getState()
+            Logger.debug("[Microphone] FFmpeg session state before handling: \(state)")
+            
+            // 如果會話仍在運行，則取消它
+            if state != .completed && state != .failed {
+                // 在取消前等待一小段時間，讓FFmpeg處理最後的數據
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self = self else { return }
+                    FFmpegKit.cancel(session.getId())
+                    Logger.debug("[Microphone] FFmpeg session cancelled")
+                }
+            } else {
+                // 如果會話已經完成，設置標記
+                isFFmpegCompleted = true
+                Logger.debug("[Microphone] FFmpeg was already completed")
+                
+                // 確保發送最後一個塊
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.createAndEmitAudioChunk(isLastChunk: true)
+                }
+            }
         }
         
-        // 只有當這不是一個重複發送的情況時才發送事件
-        if !sentChunkIndices.contains(-1) {  // 使用-1作為標記，表示已經發送過最終塊通知
-            do {
-                // 創建一個新的最終塊文件，使用當前的計數器作為索引（這將是一個新索引）
-                let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                let finalChunkFileName = "chunk_\(streamUuid)_\(audioChunkCounter).mp4"
-                let finalChunkFile = documentsDirectory.appendingPathComponent(finalChunkFileName)
-                
-                // 複製當前的文件
-                try FileManager.default.copyItem(at: webmFile, to: finalChunkFile)
-                
-                let finalChunkUri = finalChunkFile.absoluteString
-                Logger.debug("[Microphone] Creating final chunk with NEW index \(audioChunkCounter)")
-                
-                // 保存最終塊信息
-                finalChunkFileUri = finalChunkUri
-                finalChunkIndex = audioChunkCounter
-                
-                // 發送最終塊事件
-                emitChunkUpdate(chunkFileUri: finalChunkUri, chunkIndex: audioChunkCounter, isLastChunk: true)
-                
-                // 標記已經發送過最終塊通知
-                sentChunkIndices.insert(-1)
-                
-                // 不要增加計數器，因為我們已經停止錄音了
-            } catch {
-                Logger.debug("[Microphone] Error creating final audio chunk: \(error.localizedDescription)")
-            }
-        } else {
-            Logger.debug("[Microphone] Last chunk notification already sent, skipping duplicate")
-        }
+        ffmpegSession = nil
     }
     
     // 生成新的音頻塊文件並發送通知
-    private func createAndEmitAudioChunk() {
-        guard let webmFile = mp4File, FileManager.default.fileExists(atPath: webmFile.path) else {
-            return
-        }
+    private func createAndEmitAudioChunk(isLastChunk: Bool) {
+        // 取消之前的debounce timer
+        chunkCreationDebounceTimer?.invalidate()
         
-        do {
-            // 只在合適的時間間隔後創建塊
-            let now = Date()
-            if let lastTime = lastAudioChunkTime, now.timeIntervalSince(lastTime) < emissionInterval {
-                return // 尚未達到觸發間隔
+        // 創建新的timer，但對於最後一個塊減少延遲
+        let debounceTime = isLastChunk ? 0.1 : 0.3
+        
+        chunkCreationDebounceTimer = Timer.scheduledTimer(withTimeInterval: debounceTime, repeats: false) { [weak self] _ in
+            guard let self = self, let mp4FileURL = self.mp4File, FileManager.default.fileExists(atPath: mp4FileURL.path) else {
+                Logger.debug("[Microphone] MP4 file does not exist, skipping chunk creation")
+                return
             }
             
-            // 更新最後觸發時間
-            lastAudioChunkTime = now
-            
-            // 創建新的塊文件
-            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let chunkFileName = "chunk_\(streamUuid)_\(audioChunkCounter).mp4"
-            let chunkFile = documentsDirectory.appendingPathComponent(chunkFileName)
-            
-            // 複製當前的文件
-            try FileManager.default.copyItem(at: webmFile, to: chunkFile)
-            
-            // 保存最後一個塊的 URI
-            lastAudioChunkUri = chunkFile.absoluteString
-            
-            // 發送事件
-            emitChunkUpdate(chunkFileUri: chunkFile.absoluteString, chunkIndex: audioChunkCounter, isLastChunk: false)
-            
-            // 記錄此塊已發送
-            sentChunkIndices.insert(audioChunkCounter)
-            
-            // 增加塊計數器
-            audioChunkCounter += 1
-        } catch {
-            Logger.debug("[Microphone] Error creating audio chunk: \(error.localizedDescription)")
+            do {
+                // 獲取當前文件大小
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: mp4FileURL.path)
+                guard let fileSize = fileAttributes[.size] as? Int64 else {
+                    Logger.debug("[Microphone] Unable to get file size")
+                    return
+                }
+                
+                // 檢查文件是否有增長，但對於最後一個塊，即使沒有增長也處理
+                if fileSize <= self.lastAudioChunkSize && !isLastChunk && !self.needFinalChunk {
+                    Logger.debug("[Microphone] File size not increased (current: \(fileSize), last: \(self.lastAudioChunkSize)), skipping")
+                    return
+                }
+                
+                // 創建新的塊文件
+                let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                let chunkFileName = "chunk_\(self.streamUuid)_\(self.audioChunkCounter).mp4"
+                let chunkFile = documentsDirectory.appendingPathComponent(chunkFileName)
+                
+                // 打開原始文件進行讀取
+                let fileHandle = try FileHandle(forReadingFrom: mp4FileURL)
+                
+                // 確定讀取的起始位置和長度
+                let startOffset = self.lastAudioChunkSize
+                let length = fileSize - startOffset
+                
+                // 如果長度為零，且不是最後一個需要的塊，則跳過
+                if length == 0 && !(isLastChunk && self.needFinalChunk) {
+                    Logger.debug("[Microphone] Zero length chunk, skipping")
+                    try fileHandle.close()
+                    
+                    // 如果是最後一個塊但沒有新數據，也需要停止監聽
+                    if isLastChunk || self.isFFmpegCompleted {
+                        self.fileMonitor?.cancel()
+                        self.fileMonitor = nil
+                        Logger.debug("[Microphone] File monitoring stopped after final chunk (no new data)")
+                    }
+                    return
+                }
+                
+                // 尋找到起始位置
+                try fileHandle.seek(toOffset: UInt64(startOffset))
+                
+                // 讀取新增的數據
+                let chunkData = fileHandle.readDataToEndOfFile()
+                try fileHandle.close()
+                
+                // 如果數據為空，但需要發送最後一個塊，則仍然繼續
+                if chunkData.isEmpty && !(isLastChunk && self.needFinalChunk) {
+                    Logger.debug("[Microphone] Empty chunk data, skipping")
+                    
+                    // 如果是最後一個塊但沒有新數據，也需要停止監聽
+                    if isLastChunk || self.isFFmpegCompleted {
+                        self.fileMonitor?.cancel()
+                        self.fileMonitor = nil
+                        Logger.debug("[Microphone] File monitoring stopped after final chunk (empty data)")
+                    }
+                    return
+                }
+                
+                // 如果有數據，寫入新的塊文件
+                if !chunkData.isEmpty {
+                    try chunkData.write(to: chunkFile)
+                    
+                    // 更新最後處理的文件大小
+                    self.lastAudioChunkSize = fileSize
+                    
+                    // 確定是否為最後一個塊 - 如果是手動觸發的最後一個塊或FFmpeg已完成
+                    let finalIsLastChunk = isLastChunk || self.isFFmpegCompleted
+                    
+                    // 發送事件
+                    self.emitChunkUpdate(chunkFileUri: chunkFile.absoluteString, chunkIndex: self.audioChunkCounter, isLastChunk: finalIsLastChunk)
+                    
+                    // 記錄此塊已發送
+                    self.sentChunkIndices.insert(self.audioChunkCounter)
+                    
+                    // 增加塊計數器
+                    self.audioChunkCounter += 1
+                    
+                    Logger.debug("[Microphone] Created and emitted chunk \(self.audioChunkCounter-1) with size \(chunkData.count) bytes, isLastChunk: \(finalIsLastChunk)")
+                } else if isLastChunk && self.needFinalChunk {
+                    // 如果是最後一個塊但沒有新數據，發送最後一個塊的標記
+                    Logger.debug("[Microphone] No new data for final chunk, sending last chunk marker only")
+                    self.emitChunkUpdate(
+                        chunkFileUri: "",  // 空URI表示沒有新文件
+                        chunkIndex: -1,    // 特殊索引表示沒有新塊
+                        isLastChunk: true  // 但這是最後一個
+                    )
+                }
+                
+                // 如果這是最後一個塊或FFmpeg已完成，停止文件監聽
+                if isLastChunk || self.isFFmpegCompleted {
+                    self.fileMonitor?.cancel()
+                    self.fileMonitor = nil
+                    Logger.debug("[Microphone] File monitoring stopped after final chunk")
+                    
+                    // 重置標記
+                    self.needFinalChunk = false
+                }
+            } catch {
+                Logger.debug("[Microphone] Error creating audio chunk: \(error.localizedDescription)")
+                
+                // 如果處理最後一個塊時出錯，確保停止監聽
+                if isLastChunk || self.isFFmpegCompleted {
+                    self.fileMonitor?.cancel()
+                    self.fileMonitor = nil
+                    Logger.debug("[Microphone] File monitoring stopped after error in final chunk")
+                }
+            }
         }
     }
     
@@ -285,10 +468,7 @@ class Microphone {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            Logger.debug("[Microphone] About to call delegate onAudioChunkUpdate for chunk \(chunkIndex), isLastChunk: \(isLastChunk), sentIndices: \(self.sentChunkIndices)")
-            if self.delegate == nil {
-                Logger.debug("[Microphone] WARNING: delegate is nil, event will not be sent")
-            }
+            Logger.debug("[Microphone] Emitting chunk update for chunk \(chunkIndex), isLastChunk: \(isLastChunk), processedSize: \(self.lastAudioChunkSize)")
             
             self.delegate?.onAudioChunkUpdate(
                 chunkFileUri: chunkFileUri,
@@ -296,7 +476,6 @@ class Microphone {
                 streamUuid: self.streamUuid,
                 isLastChunk: isLastChunk
             )
-            Logger.debug("[Microphone] Emitted chunk update event for chunk \(chunkIndex), isLastChunk: \(isLastChunk), URI: \(chunkFileUri)")
         }
     }
     
@@ -343,6 +522,10 @@ class Microphone {
         Logger.debug("Debug: Audio session is successfully configured. Actual sample rate is \(actualSampleRate) Hz")
         
         recordingSettings = newSettings  // Update the class property with the new settings
+        
+        // 重置狀態
+        isPipeClosed = false
+        isFFmpegCompleted = false
         
         // Set up FFmpeg pipe for WebM recording
         let mp4Uri = setupFFmpegPipe(settings: newSettings)
@@ -391,38 +574,36 @@ class Microphone {
             return
         }
         
-        // // 重置最終塊信息
-        // finalChunkFileUri = nil
-        // finalChunkIndex = 0
+        // 先處理最後的音頻數據
+        if !accumulatedData.isEmpty && ffmpegPipeFileHandle != nil {
+            Logger.debug("[Microphone] Writing final accumulated data (\(accumulatedData.count) bytes) to FFmpeg pipe")
+            ffmpegPipeFileHandle?.write(accumulatedData)
+            accumulatedData.removeAll()
+        }
         
-        // Close FFmpeg pipe before stopping recording
+        // 關閉FFmpeg管道 - 這會觸發最終處理
         closeFFmpegPipe()
         
+        // 停止錄製
         self.isRecording = false
         self.isVoiceProcessingEnabled = false
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         
-        // 重置標記，準備下一次錄音
-        // sentChunkIndices.removeAll()
-        
         if let promiseResolver = promise {
-            // 只返回 null，因為最終塊的信息已經通過 delegate 的 onAudioChunkUpdate 方法發送
             promiseResolver.resolve(nil)
         }
     }
     
-    /// Processes the audio buffer and writes data to the file. Also handles audio processing if enabled.
+    /// Processes the audio buffer and writes data to the FFmpeg pipe.
     /// - Parameters:
     ///   - buffer: The audio buffer to process.
-    ///   - fileURL: The URL of the file to write the data to.
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         let targetSampleRate = recordingSettings?.desiredSampleRate ?? buffer.format.sampleRate
         let finalBuffer: AVAudioPCMBuffer
 
-        
+        // 處理採樣率轉換
         if buffer.format.sampleRate != targetSampleRate {
-            // Resample the audio buffer if the target sample rate is different from the input sample rate
             if let resampledBuffer = AudioUtils.resampleAudioBuffer(buffer, from: buffer.format.sampleRate, to: targetSampleRate) {
                 finalBuffer = resampledBuffer
             } else {
@@ -434,54 +615,57 @@ class Microphone {
                 ) {
                     finalBuffer = convertedBuffer
                 } else {
-                    Logger.debug("Failed to convert to desired format.")
+                    Logger.debug("[Microphone] Failed to convert to desired format.")
                     finalBuffer = buffer
                 }
             }
         } else {
-            // Use the original buffer if the sample rates are the same
             finalBuffer = buffer
         }
         
+        // 計算音量等級
         let powerLevel: Float = AudioUtils.calculatePowerLevel(from: finalBuffer)
         
+        // 獲取音頻數據
         let audioData = finalBuffer.audioBufferList.pointee.mBuffers
         guard let bufferData = audioData.mData else {
-            Logger.debug("Buffer data is nil.")
+            Logger.debug("[Microphone] Buffer data is nil.")
             return
         }
         
-        //let data = Data(bytes: bufferData, count: Int(audioData.mDataByteSize))
+        // 處理靜音模式
         let data = isSilent
                     ? Data(repeating: 0, count:
                             Int(finalBuffer.frameCapacity) * Int(finalBuffer.format.streamDescription.pointee.mBytesPerFrame))
                     : Data(bytes: bufferData, count: Int(audioData.mDataByteSize))
-        // Accumulate new data
+        
+        // 累積數據
         accumulatedData.append(data)
         totalDataSize += Int64(data.count)
         
+        // 根據間隔或停止錄製決定是否發送數據
         let currentTime = Date()
-        if let lastEmissionTime = lastEmissionTime, currentTime.timeIntervalSince(lastEmissionTime) >= emissionInterval {
+        let intervalElapsed = lastEmissionTime == nil || currentTime.timeIntervalSince(lastEmissionTime!) >= emissionInterval
+        
+        // 如果達到發送間隔或錄製已停止，則發送數據
+        if intervalElapsed || !isRecording {
             if let startTime = startTime {
-                _ = currentTime.timeIntervalSince(startTime)
-                // Copy accumulated data for processing
+                // 複製累積的數據進行處理
                 let dataToProcess = accumulatedData
                 
-                // Emit the processed audio data
+                // 通知代理有新的麥克風數據
                 self.delegate?.onMicrophoneData(dataToProcess, powerLevel)
-
-                // Write data to FFmpeg pipe if available
-                if let fileHandle = ffmpegPipeFileHandle {
+                
+                // 將數據寫入FFmpeg管道
+                if let fileHandle = ffmpegPipeFileHandle, !dataToProcess.isEmpty {
                     fileHandle.write(dataToProcess)
-                    
-                    // @FIXME we should listen on file change to ensure the file is written
-                    // 嘗試創建並發送音頻塊
-                    createAndEmitAudioChunk()
+                    Logger.debug("[Microphone] Wrote \(dataToProcess.count) bytes to FFmpeg pipe")
                 }
                 
-                self.lastEmissionTime = currentTime // Update last emission time
+                // 更新最後發送時間和大小
+                self.lastEmissionTime = currentTime
                 self.lastEmittedSize = totalDataSize
-                accumulatedData.removeAll() // Reset accumulated data after emission
+                accumulatedData.removeAll()
             }
         }
     }
