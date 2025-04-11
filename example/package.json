@@ -12,6 +12,7 @@
   "dependencies": {
     "@react-native-community/slider": "^4.5.6",
     "@types/lodash": "^4.17.16",
+    "buffer": "^6.0.3",
     "expo": "~50.0.14",
     "expo-av": "~13.10.6",
     "expo-document-picker": "~11.10.1",

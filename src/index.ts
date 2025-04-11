@@ -38,232 +38,6 @@ export class ExpoPlayAudioStream {
   }
 
   /**
-   * Starts microphone recording.
-   * @param {RecordingConfig} recordingConfig - Configuration for the recording.
-   * @returns {Promise<{recordingResult: StartRecordingResult, subscription: Subscription}>} A promise that resolves to an object containing the recording result and a subscription to audio events.
-   * @throws {Error} If the recording fails to start.
-   */
-  static async startRecording(recordingConfig: RecordingConfig): Promise<{
-    recordingResult: StartRecordingResult;
-    subscription?: Subscription;
-    chunkSubscription?: Subscription;
-  }> {
-    const { onAudioStream, onAudioChunkUpdate, ...options } = recordingConfig;
-
-    let subscription: Subscription | undefined;
-    let chunkSubscription: Subscription | undefined;
-
-    if (onAudioStream && typeof onAudioStream == "function") {
-      subscription = addAudioEventListener(async (event: AudioEventPayload) => {
-        const { fileUri, deltaSize, totalSize, position, encoded, soundLevel } =
-          event;
-        if (!encoded) {
-          console.error(`[ExpoPlayAudioStream] Encoded audio data is missing`);
-          throw new Error("Encoded audio data is missing");
-        }
-        onAudioStream?.({
-          data: encoded,
-          position,
-          fileUri,
-          eventDataSize: deltaSize,
-          totalSize,
-          soundLevel,
-        });
-      });
-    }
-
-    if (onAudioChunkUpdate && typeof onAudioChunkUpdate == "function") {
-      chunkSubscription = addAudioChunkUpdateListener(
-        async (event: AudioChunkUpdateEventPayload) => {
-          const { chunkFileUri, chunkIndex, streamUuid, isLastChunk } = event;
-          onAudioChunkUpdate?.({
-            chunkFileUri,
-            chunkIndex,
-            streamUuid,
-            isLastChunk,
-          });
-        }
-      );
-    }
-
-    try {
-      const recordingResult = await ExpoPlayAudioStreamModule.startRecording(
-        options
-      );
-      return { recordingResult, subscription, chunkSubscription };
-    } catch (error) {
-      console.error(error);
-      subscription?.remove();
-      chunkSubscription?.remove();
-      throw new Error(`Failed to start recording: ${error}`);
-    }
-  }
-
-  /**
-   * Stops the current microphone recording.
-   * @returns {Promise<AudioRecording>} A promise that resolves to the audio recording data.
-   * @throws {Error} If the recording fails to stop.
-   */
-  static async stopRecording(): Promise<AudioRecording> {
-    try {
-      return await ExpoPlayAudioStreamModule.stopRecording();
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to stop recording: ${error}`);
-    }
-  }
-
-  /**
-   * Plays an audio chunk.
-   * @param {string} base64Chunk - The base64 encoded audio chunk to play.
-   * @param {string} turnId - The turn ID.
-   * @param {string} [encoding] - The encoding format of the audio data ('pcm_f32le' or 'pcm_s16le').
-   * @returns {Promise<void>}
-   * @throws {Error} If the audio chunk fails to stream.
-   */
-  static async playAudio(
-    base64Chunk: string,
-    turnId: string,
-    encoding?: Encoding
-  ): Promise<void> {
-    try {
-      return ExpoPlayAudioStreamModule.playAudio(
-        base64Chunk,
-        turnId,
-        encoding ?? EncodingTypes.PCM_S16LE
-      );
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to stream audio chunk: ${error}`);
-    }
-  }
-
-  /**
-   * Pauses the current audio playback.
-   * @returns {Promise<void>}
-   * @throws {Error} If the audio playback fails to pause.
-   */
-  static async pauseAudio(): Promise<void> {
-    try {
-      return await ExpoPlayAudioStreamModule.pauseAudio();
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to pause audio: ${error}`);
-    }
-  }
-
-  /**
-   * Stops the currently playing audio.
-   * @returns {Promise<void>}
-   * @throws {Error} If the audio fails to stop.
-   */
-  static async stopAudio(): Promise<void> {
-    try {
-      return await ExpoPlayAudioStreamModule.stopAudio();
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to stop audio: ${error}`);
-    }
-  }
-
-  /**
-   * Clears the playback queue by turn ID.
-   * @param {string} turnId - The turn ID.
-   * @returns {Promise<void>}
-   * @throws {Error} If the playback queue fails to clear.
-   */
-  static async clearPlaybackQueueByTurnId(turnId: string): Promise<void> {
-    try {
-      await ExpoPlayAudioStreamModule.clearPlaybackQueueByTurnId(turnId);
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to clear playback queue: ${error}`);
-    }
-  }
-
-  /**
-   * Plays a sound.
-   * @param {string} audio - The audio to play.
-   * @param {string} turnId - The turn ID.
-   * @param {string} [encoding] - The encoding format of the audio data ('pcm_f32le' or 'pcm_s16le').
-   * @returns {Promise<void>}
-   * @throws {Error} If the sound fails to play.
-   */
-  static async playSound(
-    audio: string,
-    turnId: string,
-    encoding?: Encoding
-  ): Promise<void> {
-    try {
-      await ExpoPlayAudioStreamModule.playSound(
-        audio,
-        turnId,
-        encoding ?? EncodingTypes.PCM_S16LE
-      );
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to enqueue audio: ${error}`);
-    }
-  }
-
-  /**
-   * Stops the currently playing sound.
-   * @returns {Promise<void>}
-   * @throws {Error} If the sound fails to stop.
-   */
-  static async stopSound(): Promise<void> {
-    try {
-      await ExpoPlayAudioStreamModule.stopSound();
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to stop enqueued audio: ${error}`);
-    }
-  }
-
-  /**
-   * Interrupts the current sound.
-   * @returns {Promise<void>}
-   * @throws {Error} If the sound fails to interrupt.
-   */
-  static async interruptSound(): Promise<void> {
-    try {
-      await ExpoPlayAudioStreamModule.interruptSound();
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to stop enqueued audio: ${error}`);
-    }
-  }
-
-  /**
-   * Resumes the current sound.
-   * @returns {Promise<void>}
-   * @throws {Error} If the sound fails to resume.
-   */
-  static resumeSound(): void {
-    try {
-      ExpoPlayAudioStreamModule.resumeSound();
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to resume sound: ${error}`);
-    }
-  }
-
-  /**
-   * Clears the sound queue by turn ID.
-   * @param {string} turnId - The turn ID.
-   * @returns {Promise<void>}
-   * @throws {Error} If the sound queue fails to clear.
-   */
-  static async clearSoundQueueByTurnId(turnId: string): Promise<void> {
-    try {
-      await ExpoPlayAudioStreamModule.clearSoundQueueByTurnId(turnId);
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to clear sound queue: ${error}`);
-    }
-  }
-
-  /**
    * Starts microphone streaming.
    * @param {RecordingConfig} recordingConfig - The recording configuration.
    * @returns {Promise<{recordingResult: StartRecordingResult, subscription: Subscription}>} A promise that resolves to an object containing the recording result and a subscription to audio events.
@@ -312,12 +86,13 @@ export class ExpoPlayAudioStream {
       if (onAudioChunkUpdate && typeof onAudioChunkUpdate == "function") {
         chunkSubscription = addAudioChunkUpdateListener(
           async (event: AudioChunkUpdateEventPayload) => {
-            const { chunkFileUri, chunkIndex, streamUuid, isLastChunk } = event;
+            const { chunkFileUri, chunkIndex, streamUuid, isLastChunk, length } = event;
             onAudioChunkUpdate?.({
               chunkFileUri,
               chunkIndex,
               streamUuid,
               isLastChunk,
+              length,
             });
           }
         );
@@ -408,22 +183,6 @@ export class ExpoPlayAudioStream {
   }
 
   /**
-   * Plays a WAV audio file from base64 encoded data.
-   * Unlike playSound(), this method plays the audio directly without queueing.
-   * @param {string} wavBase64 - Base64 encoded WAV audio data.
-   * @returns {Promise<void>}
-   * @throws {Error} If the WAV audio fails to play.
-   */
-  static async playWav(wavBase64: string) {
-    try {
-      await ExpoPlayAudioStreamModule.playWav(wavBase64);
-    } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to play wav: ${error}`);
-    }
-  }
-
-  /**
    * Sets the sound player configuration.
    * @param {SoundConfig} config - Configuration options for the sound player.
    * @returns {Promise<void>}
@@ -445,15 +204,6 @@ export class ExpoPlayAudioStream {
    */
   static promptMicrophoneModes() {
     ExpoPlayAudioStreamModule.promptMicrophoneModes();
-  }
-
-  /**
-   * Toggles the silence state of the microphone.
-   * @returns {Promise<void>}
-   * @throws {Error} If the microphone fails to toggle silence.
-   */
-  static toggleSilence() {
-    ExpoPlayAudioStreamModule.toggleSilence();
   }
 
   /**

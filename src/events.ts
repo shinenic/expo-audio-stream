@@ -29,6 +29,7 @@ export interface AudioChunkUpdateEventPayload {
   chunkIndex: number;
   streamUuid: string;
   isLastChunk: boolean;
+  length: number;
 }
 
 export type SoundChunkPlayedEventPayload = {

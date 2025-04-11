@@ -542,17 +542,16 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
         sendEvent(soundIsStartedEvent)
     }
     
-    func onAudioChunkUpdate(chunkFileUri: String, chunkIndex: Int, streamUuid: String, isLastChunk: Bool) {
-        Logger.debug("[ExpoPlayAudioStreamModule] onAudioChunkUpdate called with chunkIndex: \(chunkIndex), isLastChunk: \(isLastChunk)")
+    func onAudioChunkUpdate(chunkFileUri: String, chunkIndex: Int, streamUuid: String, isLastChunk: Bool, length: Int64) {
         let eventBody: [String: Any] = [
             "chunkFileUri": chunkFileUri,
             "chunkIndex": chunkIndex,
             "streamUuid": streamUuid,
-            "isLastChunk": isLastChunk
+            "isLastChunk": isLastChunk,
+            "length": length
         ]
         Logger.debug("[ExpoPlayAudioStreamModule] Sending event: \(audioChunkUpdateEvent) with body: \(eventBody)")
         
-        // 使用 DispatchQueue.main.async 確保在主線程上發送事件
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             Logger.debug("[ExpoPlayAudioStreamModule] About to send event on main thread")

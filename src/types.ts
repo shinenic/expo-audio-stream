@@ -76,6 +76,7 @@ export interface RecordingConfig {
     chunkIndex: number;
     streamUuid: string;
     isLastChunk: boolean;
+    length: number;
   }) => Promise<void>; // Callback function to handle audio chunk updates
 }
 

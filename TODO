@@ -10,3 +10,5 @@ TODOs
 - [ ] check memory management
 - [ ] check thread safety
 
+- [ ] properly delete cache/chunk files
+

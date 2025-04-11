@@ -13,6 +13,7 @@ import * as FileSystem from "expo-file-system";
 // } from "ffmpeg-kit-react-native";
 import * as Sharing from "expo-sharing";
 import { Uploader } from "./uploader";
+import { Buffer } from "buffer";
 
 const ANDROID_SAMPLE_RATE = 48000;
 const IOS_SAMPLE_RATE = 48000;
@@ -24,20 +25,33 @@ const concatFileBufferAndSaveToFile = async (
   fileUris: string[],
   targetFileUri: string
 ) => {
+  // Read first file as binary
   let fileBuffer = await FileSystem.readAsStringAsync(fileUris[0], {
     encoding: FileSystem.EncodingType.Base64,
   });
 
+  // Convert base64 to binary
+  let binaryData = Buffer.from(fileBuffer, "base64");
+
+  // Concat remaining files as binary
   for (const fileUri of fileUris.slice(1)) {
-    const _fileBuffer = await FileSystem.readAsStringAsync(fileUri, {
+    const nextBuffer = await FileSystem.readAsStringAsync(fileUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    fileBuffer += _fileBuffer;
+    const nextBinaryData = Buffer.from(nextBuffer, 'base64');
+
+    // @ts-expect-error todo
+    binaryData = Buffer.concat([binaryData, nextBinaryData]);
   }
 
-  await FileSystem.writeAsStringAsync(targetFileUri, fileBuffer, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
+  // Write final binary back as base64
+  await FileSystem.writeAsStringAsync(
+    targetFileUri,
+    binaryData.toString("base64"),
+    {
+      encoding: FileSystem.EncodingType.Base64,
+    }
+  );
 };
 
 export default function CustomRecorder() {
@@ -373,7 +387,9 @@ export default function CustomRecorder() {
         />
         <Button
           onPress={async () => {
-            const fileUri = `${FileSystem.cacheDirectory}/concat-${Date.now()}.mp4`;
+            const fileUri = `${
+              FileSystem.cacheDirectory
+            }/concat-${Date.now()}.mp4`;
             await concatFileBufferAndSaveToFile(mp4Chunks, fileUri);
             setConcatFileUri(fileUri);
           }}
