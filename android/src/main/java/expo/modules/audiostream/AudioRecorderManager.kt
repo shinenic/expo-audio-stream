@@ -6,6 +6,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
+import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -62,8 +63,11 @@ class AudioRecorderManager(
     private var mp4File: File? = null
     
     // File monitoring related properties
-    private var fileObserverThread: Thread? = null
+    private var fileObserver: CustomFileObserver? = null
     private var fileObserverRunning = AtomicBoolean(false)
+    private val debounceHandler = Handler(Looper.getMainLooper())
+    private var pendingFileChangeRunnable: Runnable? = null
+    private val DEBOUNCE_DELAY = 300L // 300 milliseconds debounce time
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/mp4"
@@ -273,41 +277,55 @@ class AudioRecorderManager(
         promise.resolve(result)
     }
 
-    // @TODO debounce the file written callback
-    // @TODO a more reliable way to monitor the file?
     private fun startFileMonitoring() {
         fileObserverRunning.set(true)
-        fileObserverThread = Thread {
-            var lastModified = mp4File?.lastModified() ?: 0
-            var lastSize = mp4File?.length() ?: 0
+        
+        // Create a file observer to monitor the MP4 file
+        mp4File?.let { file ->
+            fileObserver = CustomFileObserver(file.absolutePath).apply {
+                startWatching()
+                Log.d(Constants.TAG, "File observer started for ${file.name}")
+            }
+        } ?: run {
+            Log.e(Constants.TAG, "Cannot start file monitoring - MP4 file is null")
+        }
+    }
+
+    /**
+     * Custom FileObserver that monitors changes to the MP4 file.
+     * More reliable than polling for changes.
+     */
+    private inner class CustomFileObserver(path: String) : FileObserver(path, MODIFY or CLOSE_WRITE) {
+        override fun onEvent(event: Int, path: String?) {
+            if (!fileObserverRunning.get()) return
             
-            while (fileObserverRunning.get() && !Thread.currentThread().isInterrupted) {
-                try {
-                    // Check file modification time and size
-                    val newModified = mp4File?.lastModified() ?: 0
-                    val newSize = mp4File?.length() ?: 0
-                    
-                    if (newModified > lastModified || newSize > lastSize) {
-                        lastModified = newModified
-                        lastSize = newSize
-                        
-                        // Trigger chunk creation on main thread
-                        mainHandler.post {
-                            createAndEmitAudioChunk()
-                        }
-                    }
-                    
-                    // Avoid excessive CPU usage
-                    Thread.sleep(300)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                } catch (e: Exception) {
-                    Log.e(Constants.TAG, "Error in file monitoring", e)
+            when (event) {
+                MODIFY, CLOSE_WRITE -> {
+                    // Debounce file changes to avoid excessive processing
+                    debounceFileChange()
                 }
             }
-            Log.d(Constants.TAG, "File monitoring stopped")
-        }.apply { start() }
+        }
+    }
+    
+    /**
+     * Debounces file change events to avoid excessive processing.
+     * Only processes the last event within the debounce window.
+     */
+    private fun debounceFileChange() {
+        pendingFileChangeRunnable?.let {
+            debounceHandler.removeCallbacks(it)
+        }
+        
+        pendingFileChangeRunnable = Runnable {
+            if (fileObserverRunning.get()) {
+                mainHandler.post {
+                    createAndEmitAudioChunk()
+                }
+            }
+        }.also {
+            debounceHandler.postDelayed(it, DEBOUNCE_DELAY)
+        }
     }
 
     private fun createAndEmitAudioChunk() {
@@ -376,8 +394,16 @@ class AudioRecorderManager(
 
     private fun stopFileMonitoring() {
         fileObserverRunning.set(false)
-        fileObserverThread?.interrupt()
-        fileObserverThread = null
+        
+        // Cancel any pending debounced callbacks
+        pendingFileChangeRunnable?.let {
+            debounceHandler.removeCallbacks(it)
+        }
+        
+        // Stop the file observer
+        fileObserver?.stopWatching()
+        fileObserver = null
+        
         Log.d(Constants.TAG, "File monitoring stopped after final chunk")
     }
 
@@ -510,20 +536,24 @@ class AudioRecorderManager(
         isPipeClosed = true
         Log.d(Constants.TAG, "Marking FFmpeg pipe as closed")
         
-        // Ensure all data is written and close pipe
-        try {
-            ffmpegPipeOutputStream?.flush()
-            ffmpegPipeOutputStream?.close()
-            ffmpegPipeOutputStream = null
-            
-            if (ffmpegPipe != null) {
-                FFmpegKitConfig.closeFFmpegPipe(ffmpegPipe)
-                ffmpegPipe = null
-                Log.d(Constants.TAG, "FFmpeg pipe closed")
+        // Add a short delay to ensure that the last data is written to the file
+        // before processing the final chunk
+        mainHandler.postDelayed({
+            // Ensure all data is written and close pipe
+            try {
+                ffmpegPipeOutputStream?.flush()
+                ffmpegPipeOutputStream?.close()
+                ffmpegPipeOutputStream = null
+                
+                if (ffmpegPipe != null) {
+                    FFmpegKitConfig.closeFFmpegPipe(ffmpegPipe)
+                    ffmpegPipe = null
+                    Log.d(Constants.TAG, "FFmpeg pipe closed")
+                }
+            } catch (e: Exception) {
+                Log.e(Constants.TAG, "Error closing FFmpeg pipe", e)
             }
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Error closing FFmpeg pipe", e)
-        }
+        }, 100) // Short delay to ensure file is complete
     }
 
     fun pauseRecording(promise: Promise) {

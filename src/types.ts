@@ -1,3 +1,5 @@
+import { AudioChunkUpdateEventPayload } from "./events";
+
 export type RecordingEncodingType = "pcm_32bit" | "pcm_16bit" | "pcm_8bit";
 export type SampleRate = 16000 | 44100 | 48000;
 export type BitDepth = 8 | 16 | 32;
@@ -51,16 +53,6 @@ export interface StartRecordingResult {
   sampleRate?: SampleRate;
 }
 
-export interface AudioDataEvent {
-  data: string | Float32Array;
-  data16kHz?: string | Float32Array;
-  position: number;
-  fileUri: string;
-  eventDataSize: number;
-  totalSize: number;
-  soundLevel?: number;
-}
-
 export interface RecordingConfig {
   sampleRate?: SampleRate; // Sample rate for recording
   channels?: 1 | 2; // 1 or 2 (MONO or STEREO)
@@ -70,28 +62,7 @@ export interface RecordingConfig {
   // Optional parameters for audio processing
   enableProcessing?: boolean; // Boolean to enable/disable audio processing (default is false)
   pointsPerSecond?: number; // Number of data points to extract per second of audio (default is 1000)
-  onAudioStream?: (event: AudioDataEvent) => Promise<void>; // Callback function to handle audio stream
-  onAudioChunkUpdate?: (event: {
-    chunkFileUri: string;
-    chunkIndex: number;
-    streamUuid: string;
-    isLastChunk: boolean;
-    length: number;
-  }) => Promise<void>; // Callback function to handle audio chunk updates
-}
-
-export interface Chunk {
-  text: string;
-  timestamp: [number, number | null];
-}
-
-export interface TranscriberData {
-  id: string;
-  isBusy: boolean;
-  text: string;
-  startTime: number;
-  endTime: number;
-  chunks: Chunk[];
+  onAudioChunkUpdate?: (event: AudioChunkUpdateEventPayload) => Promise<void>; // Callback function to handle audio chunk updates
 }
 
 export interface AudioRecording {
@@ -104,8 +75,4 @@ export interface AudioRecording {
   bitDepth: BitDepth;
   sampleRate: SampleRate;
   mimeType: string;
-  finalChunkFileUri?: string;
-  finalChunkIndex?: number;
-  transcripts?: TranscriberData[];
-  wavPCMData?: Float32Array; // Full PCM data for the recording in WAV format (only on web, for native use the fileUri)
 }

@@ -1,14 +1,37 @@
 TODOs
 
-- [ ] remove all playing logic (native modules)
+# iOS:
+- [ ] Test if record more than once
+- Stress test
+  - [ ] Record 1 hour & interval = 1 minute
+  - [ ] Record 3 hours & interval = 1 minutes
+- [v] remove all unrelated playing logic (native modules)
+- [v] save chunks
+- [ ] method to cleanup chunk & temporary files
+- [ ] encode audio container format
+- [v] check permissions
+- [ ] check background mode
+- [v] check memory management
+- [v] check thread safety
+- [v] work on simulator
+- [ ] properly delete cache/chunk files
+- [ ] the volume is low on iOS, check why
+- [ ] test if audio input changed
+
+# Android:
+- [ ] Test if record more than once
+- Stress test
+  - [ ] Record 1 hour & interval = 1 minute
+  - [ ] Record 3 hours & interval = 1 minutes
+- [ ] remove all unrelated playing logic (native modules)
 - [ ] save chunks
 - [ ] method to cleanup chunk & temporary files
-- [ ] check random-range-chunk concat
 - [ ] encode audio container format
 - [ ] check permissions
 - [ ] check background mode
 - [ ] check memory management
 - [ ] check thread safety
-
+- [ ] work on simulator
 - [ ] properly delete cache/chunk files
-
+- [ ] the volume is low on iOS, check why
+- [ ] test if audio input changed

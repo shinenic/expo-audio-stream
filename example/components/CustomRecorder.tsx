@@ -1,7 +1,6 @@
 import { Button, Platform, StyleSheet, Text, View } from "react-native";
 import { ExpoPlayAudioStream } from "../../src";
 import { useEffect, useRef, useState } from "react";
-import { AudioDataEvent } from "../../src/types";
 import { Subscription } from "expo-modules-core";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system";
@@ -19,7 +18,7 @@ const ANDROID_SAMPLE_RATE = 48000;
 const IOS_SAMPLE_RATE = 48000;
 const CHANNELS = 2;
 const ENCODING = "pcm_16bit";
-const RECORDING_INTERVAL = 4 * 1000;
+const RECORDING_INTERVAL = 5 * 1000;
 
 const concatFileBufferAndSaveToFile = async (
   fileUris: string[],
@@ -38,7 +37,7 @@ const concatFileBufferAndSaveToFile = async (
     const nextBuffer = await FileSystem.readAsStringAsync(fileUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    const nextBinaryData = Buffer.from(nextBuffer, 'base64');
+    const nextBinaryData = Buffer.from(nextBuffer, "base64");
 
     // @ts-expect-error todo
     binaryData = Buffer.concat([binaryData, nextBinaryData]);
@@ -65,96 +64,9 @@ export default function CustomRecorder() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const ffmpegSessionRef = useRef<any>(null);
-  const pipePathRef = useRef<string | null>(null);
-  const outputFileRef = useRef<string | null>(null);
-  const tempChunkCounter = useRef<number>(0);
-  const [chunks, setChunks] = useState<
-    { position: number; fileUri: string; size: number }[]
-  >([]);
   const [concatFileUri, setConcatFileUri] = useState<string | null>(null);
   const [mp4Chunks, setMp4Chunks] = useState<string[]>([]);
   const uploader = useRef<Uploader | null>(null);
-
-  const onAudioCallback = async (audio: AudioDataEvent) => {
-    console.log("on audio callback");
-
-    // try {
-    //   console.log(`pipePathRef.current`, pipePathRef.current);
-    //   if (pipePathRef.current) {
-    //     const pcmData = audio.data as string;
-
-    //     // If audio.data is a Base64 string, we need to create a temporary buffer file
-    //     // This approach creates only one temporary file per callback instead of multiple
-    //     const tempFilePath = `${
-    //       FileSystem.cacheDirectory
-    //     }temp_pcm_buffer-${new Date().getTime()}.pcm`;
-
-    //     // Write the PCM data to the temp file
-    //     await FileSystem.writeAsStringAsync(tempFilePath, pcmData, {
-    //       encoding: FileSystem.EncodingType.Base64,
-    //     });
-
-    //     setChunks((prev) => [
-    //       ...prev,
-    //       {
-    //         position: audio.position,
-    //         fileUri: tempFilePath,
-    //         size: audio.eventDataSize,
-    //       },
-    //     ]);
-
-    //     // Write the file to the pipe and wait for it to complete
-    //     const result = await FFmpegKitConfig.writeToPipe(
-    //       tempFilePath,
-    //       pipePathRef.current
-    //     );
-    //     console.log(`writeToPipe result`, result);
-
-    //     // Clean up the temporary file
-    //     // await FileSystem.deleteAsync(tempFilePath, { idempotent: true });
-    //   }
-    // } catch (error) {
-    //   console.error("Error writing to FFmpeg pipe:", error);
-    // }
-  };
-
-  // // Clean up function for FFmpeg session
-  // const cleanupFFmpegSession = async () => {
-  //   try {
-  //     if (ffmpegSessionRef.current) {
-  //       // Cancel any ongoing FFmpeg session if needed
-  //       const sessionId = await ffmpegSessionRef.current.getSessionId();
-  //       if (sessionId) {
-  //         await FFmpegKit.cancel(sessionId);
-  //       }
-  //       ffmpegSessionRef.current = null;
-  //     }
-
-  //     // Clear pipe reference
-  //     pipePathRef.current = null;
-  //   } catch (error) {
-  //     console.error("Error cleaning up FFmpeg session:", error);
-  //   }
-  // };
-
-  const playEventsListenerSubscriptionRef = useRef<Subscription | undefined>(
-    undefined
-  );
-
-  useEffect(() => {
-    playEventsListenerSubscriptionRef.current =
-      ExpoPlayAudioStream.subscribeToSoundChunkPlayed(async (event) => {
-        console.log(event);
-      });
-
-    return () => {
-      if (playEventsListenerSubscriptionRef.current) {
-        playEventsListenerSubscriptionRef.current.remove();
-        playEventsListenerSubscriptionRef.current = undefined;
-      }
-    };
-  }, []);
 
   // Clean up sound object when component unmounts
   useEffect(() => {
@@ -198,7 +110,6 @@ export default function CustomRecorder() {
       }
 
       const { sound: newSound } = await Audio.Sound.createAsync({
-        // uri: `https://github.com/michaelmob/WebMCam/raw/refs/heads/master/Preview/example-audio.webm`,
         uri,
       });
       setSound(newSound);
@@ -274,7 +185,6 @@ export default function CustomRecorder() {
           sampleRate,
           channels: CHANNELS,
           encoding: ENCODING,
-          onAudioStream: onAudioCallback,
           onAudioChunkUpdate: async (event) => {
             console.log(
               "onAudioChunkUpdate callback invoked, index: ",
@@ -302,30 +212,6 @@ export default function CustomRecorder() {
 
       if (recordingResult.mp4FileUri) {
         setMp4RecordingUri(recordingResult.mp4FileUri);
-
-        // setInterval(() => {
-        //   FileSystem.getInfoAsync(recordingResult.webmFileUri || "").then(
-        //     (res) => {
-        //       console.log(res.exists ? res.size : "not found");
-        //     }
-        //   );
-        // }, 2000);
-        // setInterval(() => {
-        //   FileSystem.getInfoAsync(recordingResult.webmFileUri || "").then(
-        //     (res) => {
-        //       if (res.exists) {
-        //         const cacheFile = `${
-        //           FileSystem.cacheDirectory
-        //         }/mp4-${Date.now()}.mp4`;
-        //         FileSystem.copyAsync({
-        //           from: recordingResult.webmFileUri!,
-        //           to: cacheFile,
-        //         });
-        //         setMp4Chunks((prev) => [...prev, cacheFile]);
-        //       }
-        //     }
-        //   );
-        // }, 2000);
       }
 
       console.log(JSON.stringify(recordingResult, null, 2));
@@ -485,42 +371,6 @@ export default function CustomRecorder() {
 
                     await FileSystem.copyAsync({
                       from: chunk,
-                      to: destinationUri,
-                    });
-
-                    shareableUri = destinationUri;
-                  }
-                }
-
-                await Sharing.shareAsync(shareableUri);
-              }}
-            />
-          </View>
-        ))}
-      </View>
-      <View style={styles.chunkList}>
-        <Text style={styles.sectionTitle}>Audio Chunks ({chunks.length})</Text>
-        {chunks.map((chunk) => (
-          <View
-            key={chunk.fileUri}
-            style={{ display: "flex", flexDirection: "row", gap: 20 }}
-          >
-            <Text>{chunk.position}</Text>
-            <Text>{chunk.size}</Text>
-            <Button
-              title="Share"
-              onPress={async () => {
-                let shareableUri = chunk.fileUri;
-
-                if (!chunk.fileUri.startsWith(FileSystem.cacheDirectory!)) {
-                  const fileInfo = await FileSystem.getInfoAsync(chunk.fileUri);
-                  if (fileInfo.exists) {
-                    const fileExtension = chunk.fileUri.split(".").pop();
-                    const fileName = `share-audio-${Date.now()}.${fileExtension}`;
-                    const destinationUri = `${FileSystem.cacheDirectory}${fileName}`;
-
-                    await FileSystem.copyAsync({
-                      from: chunk.fileUri,
                       to: destinationUri,
                     });
 

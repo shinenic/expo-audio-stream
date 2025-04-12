@@ -30,7 +30,6 @@ class Microphone {
 
     private var inittedAudioSession = false
     private var isRecording: Bool = false
-    private var isSilent: Bool = false
     
     private var audioChunkCounter: Int = 0
     private var streamUuid: String = ""
@@ -73,7 +72,7 @@ class Microphone {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self = self else { return }
                     
-                    _ = startRecording(settings: self.recordingSettings!, intervalMilliseconds: 100)
+                    _ = startRecording(settings: self.recordingSettings!, intervalMilliseconds: Int(emissionInterval))
                 }
             }
         case .categoryChange:
@@ -81,11 +80,6 @@ class Microphone {
         default:
             break
         }
-    }
-    
-    func toggleSilence() {
-        Logger.debug("[Microphone] toggleSilence")
-        self.isSilent = !self.isSilent
     }
     
     /// Creates and starts an FFmpeg session to encode raw PCM data to MP4
@@ -244,7 +238,8 @@ class Microphone {
                 return
             }
             
-            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let documentsDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            // let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             let chunkFileName = "chunk_\(self.streamUuid)_\(self.audioChunkCounter).mp4"
             let chunkFile = documentsDirectory.appendingPathComponent(chunkFileName)
             
@@ -338,6 +333,13 @@ class Microphone {
             Logger.debug("Debug: Preferred sample rate not set. Falling back to hardware sample rate: \(actualSampleRate) Hz")
             newSettings.sampleRate = actualSampleRate
         }
+        // Add a fallback for the simulator
+        #if TARGET_OS_SIMULATOR
+            if newSettings.sampleRate > 44100.0 {
+                Logger.debug("Debug: Sample rate too high for simulator, falling back to 44100 Hz")
+                newSettings.sampleRate = 44100.0
+            }
+        #endif
         Logger.debug("Debug: Audio session is successfully configured. Actual sample rate is \(actualSampleRate) Hz")
         
         recordingSettings = newSettings  // Update the class property with the new settings
@@ -448,10 +450,7 @@ class Microphone {
             return
         }
         
-        let data = isSilent
-                    ? Data(repeating: 0, count:
-                            Int(finalBuffer.frameCapacity) * Int(finalBuffer.format.streamDescription.pointee.mBytesPerFrame))
-                    : Data(bytes: bufferData, count: Int(audioData.mDataByteSize))
+        let data = Data(bytes: bufferData, count: Int(audioData.mDataByteSize))
         
         accumulatedData.append(data)
         totalDataSize += Int64(data.count)
@@ -463,7 +462,7 @@ class Microphone {
             if let startTime = startTime {
                 let dataToProcess = accumulatedData
                 
-                self.delegate?.onMicrophoneData(dataToProcess, powerLevel)
+                // self.delegate?.onMicrophoneData(dataToProcess, powerLevel)
                 
                 if let fileHandle = ffmpegPipeFileHandle, !dataToProcess.isEmpty {
                     fileHandle.write(dataToProcess)
