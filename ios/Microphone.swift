@@ -88,9 +88,9 @@ class Microphone {
         self.isSilent = !self.isSilent
     }
     
-    /// Creates and starts an FFmpeg session to encode raw PCM data to WebM
+    /// Creates and starts an FFmpeg session to encode raw PCM data to MP4
     /// - Parameter settings: Recording settings for the audio
-    /// - Returns: The URI of the WebM file, or nil if setup failed
+    /// - Returns: The URI of the MP4 file, or nil if setup failed
     private func setupFFmpegPipe(settings: RecordingSettings) -> String? {
         let fileManager = FileManager.default
         let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -134,20 +134,15 @@ class Microphone {
             format = "s16le" // Default to 16-bit
         }
                 
-        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a aac -b:a 192k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 100000 -y \"\(mp4FileUrl.path)\""
+        let ffmpegCommand = "-f \(format) -ar \(sampleRate) -ac \(channels) -i \(pipe) -c:a aac -b:a 192k -flush_packets 1 -max_delay 0 -fflags nobuffer -flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 1000000 -y \"\(mp4FileUrl.path)\""
         
         // setup ffmpeg session and handle completion callback
         FFmpegKit.executeAsync(ffmpegCommand) { [weak self] session in
             guard let self = self else { return }
 
-            DispatchQueue.main.async {
-                self.isFFmpegCompleted = true
-                
-                if self.fileMonitor != nil {
-                    Logger.debug("[Microphone] FFmpeg completed, sending final chunk")
-                    self.createAndEmitAudioChunk(isLastChunk: true)
-                }
-            }
+            Logger.debug("[Microphone] FFmpeg session completed")
+            self.isFFmpegCompleted = true
+            self.debouncedHandleFileChange()
         } withLogCallback: { log in
         } withStatisticsCallback: { statistics in
         }
@@ -195,15 +190,16 @@ class Microphone {
     }
     
     private func debouncedHandleFileChange() {
+        Logger.debug("[Microphone] Debounced handle file change")
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
             self.fileChangeDebounceTimer?.invalidate()
             
             self.fileChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
-                guard let self = self, !self.isFFmpegCompleted else { return }
+                guard let self = self else { return }
                 
-                self.createAndEmitAudioChunk(isLastChunk: false)
+                self.createAndEmitAudioChunk()
             }
         }
     }
@@ -227,11 +223,13 @@ class Microphone {
         }
     }
     
-    private func createAndEmitAudioChunk(isLastChunk: Bool) {
+    private func createAndEmitAudioChunk() {
         guard let mp4FileURL = self.mp4File, FileManager.default.fileExists(atPath: mp4FileURL.path) else {
             Logger.debug("[Microphone] MP4 file does not exist, skipping chunk creation")
             return
         }
+
+        Logger.debug("[Microphone] Creating and emitting audio chunk, isFFmpegCompleted: \(self.isFFmpegCompleted)")
         
         do {
             let fileAttributes = try FileManager.default.attributesOfItem(atPath: mp4FileURL.path)
@@ -241,7 +239,7 @@ class Microphone {
             }
             
             // Skip if the file size is not increased and it's not the last chunk
-            if fileSize <= self.lastAudioChunkSize && !isLastChunk {
+            if fileSize <= self.lastAudioChunkSize && !self.isFFmpegCompleted {
                 Logger.debug("[Microphone] File size not increased (current: \(fileSize), last: \(self.lastAudioChunkSize)), skipping")
                 return
             }
@@ -261,15 +259,13 @@ class Microphone {
 
             try chunkData.write(to: chunkFile)
             self.lastAudioChunkSize = fileSize
-            // @TODO check this condition
-            let finalIsLastChunk = isLastChunk || self.isFFmpegCompleted
-            self.emitChunkUpdate(chunkFileUri: chunkFile.absoluteString, chunkIndex: self.audioChunkCounter, isLastChunk: finalIsLastChunk, length: length)
+            self.emitChunkUpdate(chunkFileUri: chunkFile.absoluteString, chunkIndex: self.audioChunkCounter, isLastChunk: self.isFFmpegCompleted, length: length)
             self.sentChunkIndices.insert(self.audioChunkCounter)
             self.audioChunkCounter += 1
             
-            Logger.debug("[Microphone] Created and emitted chunk \(self.audioChunkCounter-1) with size \(chunkData.count) bytes, isLastChunk: \(finalIsLastChunk), length: \(length)")
+            Logger.debug("[Microphone] Created and emitted chunk \(self.audioChunkCounter-1) with size \(chunkData.count) bytes, isLastChunk: \(self.isFFmpegCompleted), length: \(length)")
             
-            if isLastChunk || self.isFFmpegCompleted {
+            if self.isFFmpegCompleted {
                 self.fileMonitor?.cancel()
                 self.fileMonitor = nil
                 Logger.debug("[Microphone] File monitoring stopped after final chunk")
@@ -278,7 +274,7 @@ class Microphone {
         } catch {
             Logger.debug("[Microphone] Error creating audio chunk: \(error.localizedDescription)")
             
-            if isLastChunk || self.isFFmpegCompleted {
+            if self.isFFmpegCompleted {
                 self.fileMonitor?.cancel()
                 self.fileMonitor = nil
                 Logger.debug("[Microphone] File monitoring stopped after error in final chunk")
@@ -349,7 +345,6 @@ class Microphone {
         isPipeClosed = false
         isFFmpegCompleted = false
         
-        // Set up FFmpeg pipe for WebM recording
         let mp4Uri = setupFFmpegPipe(settings: newSettings)
         
         // Correct the format to use 16-bit integer (PCM)
@@ -375,7 +370,7 @@ class Microphone {
             Logger.debug("Debug: Recording started successfully.")
             return StartRecordingResult(
                 fileUri: "",
-                webmFileUri: mp4Uri,
+                mp4FileUri: mp4Uri,
                 mimeType: mimeType,
                 channels: settings.numberOfChannels,
                 bitDepth: settings.bitDepth,
@@ -388,6 +383,7 @@ class Microphone {
         }
     }
     
+    // @TODO return the final file size
     public func stopRecording(resolver promise: Promise?) {
         guard self.isRecording else {
             if let promiseResolver = promise {

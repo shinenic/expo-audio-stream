@@ -140,7 +140,7 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
                 // Convert RecordingResult to a dictionary
                 let resultDict: [String: Any] = [
                     "fileUri": recordingResult.fileUri,
-                    "webmFileUri": recordingResult.webmFileUri ?? "",
+                    "mp4FileUri": recordingResult.mp4FileUri ?? "",
                     "filename": recordingResult.filename ?? "",
                     "durationMs": recordingResult.duration ?? 0,
                     "size": recordingResult.size ?? 0,
@@ -297,7 +297,7 @@ public class ExpoPlayAudioStreamModule: Module, AudioStreamManagerDelegate, Micr
                 } else {
                     let resultDict: [String: Any] = [
                         "fileUri": result.fileUri ?? "",
-                        "webmFileUri": result.webmFileUri ?? "",
+                        "mp4FileUri": result.mp4FileUri ?? "",
                         "channels": result.channels ?? 1,
                         "bitDepth": result.bitDepth ?? 16,
                         "sampleRate": result.sampleRate ?? 48000,

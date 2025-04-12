@@ -2,7 +2,7 @@
 
 struct RecordingResult {
     var fileUri: String
-    var webmFileUri: String?
+    var mp4FileUri: String?
     var filename: String?
     var mimeType: String?
     var duration: Int64?
@@ -16,7 +16,7 @@ struct RecordingResult {
 
 struct StartRecordingResult {
     var fileUri: String?
-    var webmFileUri: String?
+    var mp4FileUri: String?
     var mimeType: String?
     var channels: Int?
     var bitDepth: Int?

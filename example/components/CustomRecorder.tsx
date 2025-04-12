@@ -280,7 +280,9 @@ export default function CustomRecorder() {
               "onAudioChunkUpdate callback invoked, index: ",
               event.chunkIndex,
               "isLastChunk:",
-              event.isLastChunk
+              event.isLastChunk,
+              "length:",
+              event.length
             );
 
             setMp4Chunks((prev) => [...prev, event.chunkFileUri]);
@@ -298,8 +300,8 @@ export default function CustomRecorder() {
           },
         });
 
-      if (recordingResult.webmFileUri) {
-        setMp4RecordingUri(recordingResult.webmFileUri);
+      if (recordingResult.mp4FileUri) {
+        setMp4RecordingUri(recordingResult.mp4FileUri);
 
         // setInterval(() => {
         //   FileSystem.getInfoAsync(recordingResult.webmFileUri || "").then(

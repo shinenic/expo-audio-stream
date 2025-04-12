@@ -1,7 +1,7 @@
 package expo.modules.audiostream
 
 object Constants {
-    const val AUDIO_EVENT_NAME = "AudioData"
+    const val AUDIO_EVENT_NAME = "audioData"
     const val AUDIO_ANALYSIS_EVENT_NAME = "AudioAnalysis"
     const val AUDIO_CHUNK_UPDATE_EVENT_NAME = "AudioChunkUpdate"
     const val DEFAULT_SAMPLE_RATE = 16000 // Default sample rate for audio recording
@@ -15,5 +15,5 @@ object Constants {
     const val FMT_CHUNK_ID = 0x666d7420 // "fmt "
     const val DATA_CHUNK_ID = 0x64617461 // "data"
     const val INFO_CHUNK_ID = 0x494E464F // "info"
-    const val TAG = "AudioRecorderModule"
+    const val TAG = "ExpoPlayAudioStream"
 }

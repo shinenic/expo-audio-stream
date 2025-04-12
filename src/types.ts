@@ -44,7 +44,7 @@ export type Encoding = (typeof EncodingTypes)[keyof typeof EncodingTypes];
 
 export interface StartRecordingResult {
   fileUri: string;
-  webmFileUri?: string;
+  mp4FileUri?: string;
   mimeType: string;
   channels?: number;
   bitDepth?: BitDepth;
@@ -96,7 +96,7 @@ export interface TranscriberData {
 
 export interface AudioRecording {
   fileUri: string;
-  webmFileUri?: string;
+  mp4FileUri?: string;
   filename: string;
   durationMs: number;
   size: number;

@@ -174,12 +174,13 @@ class ExpoPlayAudioStreamModule : Module(), EventSender {
         }
 
     }
+    
     private fun initializeManager() {
-        val androidContext =
+        val androidContext = 
             appContext.reactContext ?: throw IllegalStateException("Android context not available")
         val permissionUtils = PermissionUtils(androidContext)
         val audioEncoder = AudioDataEncoder()
-        audioRecorderManager =
+        audioRecorderManager = 
             AudioRecorderManager(androidContext.filesDir, permissionUtils, audioEncoder, this, androidContext)
     }
 
