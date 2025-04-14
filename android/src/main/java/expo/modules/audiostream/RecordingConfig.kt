@@ -5,6 +5,5 @@ data class RecordingConfig(
     val channels: Int = 1,
     val encoding: String = "pcm_16bit",
     val interval: Long = Constants.DEFAULT_INTERVAL,
-    val pointsPerSecond: Double = 20.0
 )
 

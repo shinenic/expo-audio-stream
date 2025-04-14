@@ -19,5 +19,6 @@ struct StartRecordingResult {
     var channels: Int?
     var bitDepth: Int?
     var sampleRate: Double?
+    var streamUuid: String?
     var error: String?
 }

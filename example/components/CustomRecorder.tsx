@@ -77,10 +77,6 @@ const concatFileBufferAndSaveToFile = async (
 };
 
 export default function CustomRecorder() {
-  const eventListenerSubscriptionRef = useRef<Subscription | undefined>(
-    undefined
-  );
-  const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
 
   const [mp4RecordingUri, setMp4RecordingUri] = useState<string | null>(null);
@@ -202,43 +198,41 @@ export default function CustomRecorder() {
       const sampleRate =
         Platform.OS === "ios" ? IOS_SAMPLE_RATE : ANDROID_SAMPLE_RATE;
       // Start microphone recording
-      const { recordingResult, subscription } =
-        await ExpoPlayAudioStream.startMicrophone({
-          interval: RECORDING_INTERVAL,
-          sampleRate,
-          channels: CHANNELS,
-          encoding: ENCODING,
-          onAudioChunkUpdate: async (event) => {
-            console.log(
-              "onAudioChunkUpdate callback invoked, index: ",
-              event.chunkIndex,
-              "isLastChunk:",
-              event.isLastChunk,
-              "length:",
-              event.length
-            );
+      const { recordingResult } = await ExpoPlayAudioStream.startMicrophone({
+        interval: RECORDING_INTERVAL,
+        sampleRate,
+        channels: CHANNELS,
+        encoding: ENCODING,
+        onAudioChunkUpdate: async (event) => {
+          console.log(
+            "onAudioChunkUpdate callback invoked, index: ",
+            event.chunkIndex,
+            "isLastChunk:",
+            event.isLastChunk,
+            "length:",
+            event.length
+          );
 
-            setMp4Chunks((prev) => [...prev, event.chunkFileUri]);
+          setMp4Chunks((prev) => [...prev, event.chunkFileUri]);
 
-            if (uploader.current) {
-              uploader.current.addChunk({
-                uri: event.chunkFileUri,
-                index: event.chunkIndex,
-              });
+          if (uploader.current) {
+            uploader.current.addChunk({
+              uri: event.chunkFileUri,
+              index: event.chunkIndex,
+            });
 
-              if (event.isLastChunk) {
-                uploader.current.done();
-              }
+            if (event.isLastChunk) {
+              uploader.current.done();
             }
-          },
-        });
+          }
+        },
+      });
 
       if (recordingResult.mp4FileUri) {
         setMp4RecordingUri(recordingResult.mp4FileUri);
       }
 
       console.log(JSON.stringify(recordingResult, null, 2));
-      eventListenerSubscriptionRef.current = subscription;
       setIsRecording(true);
       setRecordingDuration(0);
     } catch (error) {
@@ -260,11 +254,6 @@ export default function CustomRecorder() {
       // if (recordingResult?.mp4FileUri) {
       //   setRecordingUri(recordingResult.mp4FileUri);
       // }
-
-      if (eventListenerSubscriptionRef.current) {
-        eventListenerSubscriptionRef.current.remove();
-        eventListenerSubscriptionRef.current = undefined;
-      }
 
       setIsRecording(false);
     } catch (error) {
@@ -350,22 +339,6 @@ export default function CustomRecorder() {
           title="Diff with source mp4 file"
           disabled={!mp4RecordingUri || !concatFileUri}
         />
-      </View>
-
-      <View style={styles.buttonGroup}>
-        {recordingUri && (
-          <View style={styles.mergedAudio}>
-            <Text style={styles.sectionTitle}>Recording Audio</Text>
-            <Text>URL: {recordingUri}</Text>
-            <View style={styles.buttonRow}>
-              <Button
-                onPress={() => playAudio(recordingUri)}
-                title="Play recording Audio"
-              />
-              <Button onPress={() => shareAudio(recordingUri)} title="Share" />
-            </View>
-          </View>
-        )}
       </View>
 
       <View style={styles.buttonGroup}>

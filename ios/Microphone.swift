@@ -18,7 +18,7 @@ class Microphone {
     private var totalDataSize: Int64 = 0
     internal var recordingSettings: RecordingSettings?
     
-    internal var mimeType: String = "audio/wav"
+    internal var mimeType: String = "audio/mp4"
     private var lastBufferTime: AVAudioTime?
     private var accumulatedData = Data()
     
@@ -89,7 +89,6 @@ class Microphone {
         let fileManager = FileManager.default
         let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
         
-        streamUuid = UUID().uuidString
         let mp4FileName = "audio_\(streamUuid).mp4"
         let mp4FileUrl = documentsDirectory.appendingPathComponent(mp4FileName)
         mp4File = mp4FileUrl
@@ -317,43 +316,34 @@ class Microphone {
         lastEmissionTime = Date()
         accumulatedData.removeAll()
         totalDataSize = 0
+        streamUuid = UUID().uuidString
         
         let session = AVAudioSession.sharedInstance()
         Logger.debug("Debug: Configuring audio session with sample rate: \(settings.sampleRate) Hz")
         
-        // Check if the input node supports the desired format
+        // Get hardware format first
         let hardwareFormat = audioEngine.inputNode.inputFormat(forBus: 0)
-        if hardwareFormat.sampleRate != newSettings.sampleRate {
-            Logger.debug("Debug: Preferred sample rate not supported. Falling back to hardware sample rate \(session.sampleRate).")
-            newSettings.sampleRate = session.sampleRate
+        
+        // Always use the exact hardware sample rate when installing the tap
+        guard let audioFormat = AVAudioFormat(
+            commonFormat: commonFormat,
+            sampleRate: hardwareFormat.sampleRate,
+            channels: UInt32(newSettings.numberOfChannels),
+            interleaved: true
+        ) else {
+            Logger.debug("Error: Failed to create audio format with the specified bit depth.")
+            return StartRecordingResult(error: "Error: Failed to create audio format with the specified bit depth.")
         }
         
-        let actualSampleRate = session.sampleRate
-        if actualSampleRate != newSettings.sampleRate {
-            Logger.debug("Debug: Preferred sample rate not set. Falling back to hardware sample rate: \(actualSampleRate) Hz")
-            newSettings.sampleRate = actualSampleRate
-        }
-        // Add a fallback for the simulator
-        #if TARGET_OS_SIMULATOR
-            if newSettings.sampleRate > 44100.0 {
-                Logger.debug("Debug: Sample rate too high for simulator, falling back to 44100 Hz")
-                newSettings.sampleRate = 44100.0
-            }
-        #endif
-        Logger.debug("Debug: Audio session is successfully configured. Actual sample rate is \(actualSampleRate) Hz")
+        // Update our settings to match what we're actually using
+        newSettings.sampleRate = hardwareFormat.sampleRate
+        recordingSettings = newSettings
         
-        recordingSettings = newSettings  // Update the class property with the new settings
-        
+        // Set up FFmpeg before installing tap
         isPipeClosed = false
         isFFmpegCompleted = false
         
         let mp4Uri = setupFFmpegPipe(settings: newSettings)
-        
-        // Correct the format to use 16-bit integer (PCM)
-        guard let audioFormat = AVAudioFormat(commonFormat: commonFormat, sampleRate: newSettings.sampleRate, channels: UInt32(newSettings.numberOfChannels), interleaved: true) else {
-            Logger.debug("Error: Failed to create audio format with the specified bit depth.")
-            return StartRecordingResult(error: "Error: Failed to create audio format with the specified bit depth.")
-        }
         
         audioEngine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: audioFormat) { [weak self] (buffer, time) in
             guard let self = self else {
@@ -375,7 +365,8 @@ class Microphone {
                 mimeType: mimeType,
                 channels: settings.numberOfChannels,
                 bitDepth: settings.bitDepth,
-                sampleRate: settings.sampleRate
+                sampleRate: settings.sampleRate,
+                streamUuid: streamUuid
             )
         } catch {
             Logger.debug("Error: Could not start the audio engine: \(error.localizedDescription)")
@@ -401,8 +392,6 @@ class Microphone {
 
         // write the final accumulated data to the ffmpeg pipe
         if !accumulatedData.isEmpty && ffmpegPipeFileHandle != nil {
-          // @TODO remove
-            Logger.debug("[Microphone] Writing final accumulated data (\(accumulatedData.count) bytes) to FFmpeg pipe")
             ffmpegPipeFileHandle?.write(accumulatedData)
             accumulatedData.removeAll()
         }

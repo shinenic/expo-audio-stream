@@ -4,11 +4,8 @@ import {
   AudioRecording,
   RecordingConfig,
   StartRecordingResult,
-  SoundConfig,
-  PlaybackMode,
   Encoding,
   EncodingTypes,
-  PlaybackModes,
 } from "./types";
 
 import {
@@ -16,8 +13,6 @@ import {
   AudioChunkUpdateEventPayload,
   AudioEvents,
 } from "./events";
-
-const SuspendSoundEventTurnId = "suspend-sound-events";
 
 export class ExpoPlayAudioStream {
   /**
@@ -37,10 +32,8 @@ export class ExpoPlayAudioStream {
    */
   static async startMicrophone(recordingConfig: RecordingConfig): Promise<{
     recordingResult: StartRecordingResult;
-    subscription?: Subscription;
     chunkSubscription?: Subscription;
   }> {
-    let subscription: Subscription | undefined;
     let chunkSubscription: Subscription | undefined;
 
     try {
@@ -58,10 +51,9 @@ export class ExpoPlayAudioStream {
 
       const result = await ExpoPlayAudioStreamModule.startMicrophone(options);
 
-      return { recordingResult: result, subscription, chunkSubscription };
+      return { recordingResult: result, chunkSubscription };
     } catch (error) {
       console.error(error);
-      subscription?.remove();
       chunkSubscription?.remove();
       throw new Error(`Failed to start recording: ${error}`);
     }
@@ -99,10 +91,6 @@ export {
   RecordingConfig,
   StartRecordingResult,
   AudioEvents,
-  SuspendSoundEventTurnId,
-  SoundConfig,
-  PlaybackMode,
   Encoding,
   EncodingTypes,
-  PlaybackModes,
 };

@@ -1,41 +1,43 @@
 TODOs
 
 # iOS:
-- [ ] Test if record more than once
+- [v] Test if record more than once
+- Stress test
+  - [ ] Record 1 hour & interval = 1 minute
+  - [ ] Record 3 hours & interval = 1 minutes
+- [v] remove all unrelated playing logic (native modules)
+- [v] save chunks
+- [v] method to cleanup chunk & temporary files
+- [v] check permissions
+- [ ] check background mode
+- [v] check thread safety
+- [v] work on simulator
+- [ ] properly delete cache/chunk files
+- [ ] the volume is low on iOS, check why
+      (need more test, but it's solved on iPhone now)
+- [ ] test if audio input changed
+- [v] any memory leak? (after inspect, the memory seems to be released after a few rounds, so it looks fine)
+- [v] remove unused comment
+- [ ] recoverable?
+- [ ] check the path of the file (cache or document?)
+- [ ] pause/resume
+
+# Android:
+- [v] Test if record more than once
 - Stress test
   - [ ] Record 1 hour & interval = 1 minute
   - [ ] Record 3 hours & interval = 1 minutes
 - [v] remove all unrelated playing logic (native modules)
 - [v] save chunks
 - [ ] method to cleanup chunk & temporary files
-- [ ] encode audio container format
-- [v] check permissions
-- [ ] check background mode
-- [v] check memory management
-- [v] check thread safety
+- [ ] check permissions
+- [v] check background mode
+- [ ] check thread safety
 - [v] work on simulator
 - [ ] properly delete cache/chunk files
-- [ ] the volume is low on iOS, check why
-- [ ] test if audio input changed
-- [ ] any memory leak? (after inspect, the memory seems to be released after a few rounds)
-- [v] remove unused comment
-
-# Android:
-- [ ] Test if record more than once
-- Stress test
-  - [ ] Record 1 hour & interval = 1 minute
-  - [ ] Record 3 hours & interval = 1 minutes
-- [ ] remove all unrelated playing logic (native modules)
-- [ ] save chunks
-- [ ] method to cleanup chunk & temporary files
-- [ ] encode audio container format
-- [ ] check permissions
-- [ ] check background mode
-- [ ] check memory management
-- [ ] check thread safety
-- [ ] work on simulator
-- [ ] properly delete cache/chunk files
-- [ ] the volume is low on iOS, check why
 - [ ] test if audio input changed
 - [ ] any memory leak?
 - [ ] remove unused comment
+- [ ] recoverable?
+- [ ] check the path of the file (cache or document?)
+- [ ] pause/resume

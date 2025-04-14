@@ -84,7 +84,6 @@ class AudioRecorderManager(
             channels = (options["channels"] as? Number)?.toInt() ?: 1,
             encoding = options["encoding"] as? String ?: "pcm_16bit",
             interval = (options["interval"] as? Number)?.toLong() ?: Constants.DEFAULT_INTERVAL,
-            pointsPerSecond = (options["pointsPerSecond"] as? Number)?.toDouble() ?: 20.0
         )
         Log.d(Constants.TAG, "Initial recording configuration: $tempRecordingConfig")
 
@@ -222,7 +221,8 @@ class AudioRecorderManager(
                 else -> 16 // Default to 16 if the encoding is not recognized
             },
             "sampleRate" to recordingConfig.sampleRate,
-            "mimeType" to mimeType
+            "mimeType" to mimeType,
+            "streamUuid" to streamUuid
         )
         promise.resolve(result)
     }

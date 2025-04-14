@@ -51,8 +51,7 @@ public class ExpoPlayAudioStreamModule: Module, MicrophoneDataDelegate {
                 desiredSampleRate: sampleRate,
                 numberOfChannels: numberOfChannels,
                 bitDepth: bitDepth,
-                maxRecentDataDuration: nil,
-                pointsPerSecond: nil
+                maxRecentDataDuration: nil
             )
             
             if !isAudioSessionInitialized {
@@ -79,6 +78,7 @@ public class ExpoPlayAudioStreamModule: Module, MicrophoneDataDelegate {
                         "bitDepth": result.bitDepth ?? 16,
                         "sampleRate": result.sampleRate ?? 48000,
                         "mimeType": result.mimeType ?? "",
+                        "streamUuid": result.streamUuid ?? ""
                     ]
                     promise.resolve(resultDict)
                 }
@@ -108,10 +108,14 @@ public class ExpoPlayAudioStreamModule: Module, MicrophoneDataDelegate {
         } else {
             // Fallback on earlier versions
         }
+
+        // Only try to set preferred sample rate on real devices, not on simulator
+        #if !TARGET_OS_SIMULATOR
         if let settings = recordingSettings {
             try audioSession.setPreferredSampleRate(settings.sampleRate)
             try audioSession.setPreferredIOBufferDuration(1024 / settings.sampleRate)
         }
+        #endif
         
         // try? AVAudioSession.sharedInstance().setActive(false)
         // try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
