@@ -371,7 +371,6 @@ class Microphone {
             isRecording = true
             Logger.debug("Debug: Recording started successfully.")
             return StartRecordingResult(
-                fileUri: "",
                 mp4FileUri: mp4Uri,
                 mimeType: mimeType,
                 channels: settings.numberOfChannels,

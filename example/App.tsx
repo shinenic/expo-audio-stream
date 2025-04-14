@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 import { useState } from "react";
-import Slider from "@react-native-community/slider";
+// import Slider from "@react-native-community/slider";
 import CustomRecorder from "./components/CustomRecorder";
 import ExpoAVRecorder from "./components/ExpoAVRecorder";
 
@@ -26,8 +26,8 @@ export default function App() {
       <View style={styles.interactiveSection}>
         <Text style={styles.sectionTitle}>Interactive UI Elements</Text>
 
-        <Text>Slider Value: {sliderValue.toFixed(1)}</Text>
-        <Slider
+        {/* <Text>Slider Value: {sliderValue.toFixed(1)}</Text> */}
+        {/* <Slider
           style={styles.slider}
           minimumValue={0}
           maximumValue={100}
@@ -35,7 +35,7 @@ export default function App() {
           onValueChange={setSliderValue}
           minimumTrackTintColor="#007AFF"
           maximumTrackTintColor="#000000"
-        />
+        /> */}
 
         <TextInput
           style={styles.textInput}

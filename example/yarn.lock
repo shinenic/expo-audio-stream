@@ -2507,13 +2507,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@react-native-community/slider@npm:^4.5.6":
-  version: 4.5.6
-  resolution: "@react-native-community/slider@npm:4.5.6"
-  checksum: 10c0/6ff9b91b8f9af14fadccad101fc0abc17c864a5d2832483aef8813e67a93ad723053ed033141f71db8f7a128d3b1fdf4dd37f5c093901e7f041380a671090283
-  languageName: node
-  linkType: hard
-
 "@react-native/assets-registry@npm:0.73.1, @react-native/assets-registry@npm:~0.73.1":
   version: 0.73.1
   resolution: "@react-native/assets-registry@npm:0.73.1"
@@ -4363,7 +4356,6 @@ __metadata:
   resolution: "expo-audio-stream-example@workspace:."
   dependencies:
     "@babel/core": "npm:^7.20.0"
-    "@react-native-community/slider": "npm:^4.5.6"
     "@types/lodash": "npm:^4.17.16"
     "@types/react": "npm:~18.2.45"
     "@types/uuid": "npm:^10"

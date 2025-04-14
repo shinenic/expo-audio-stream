@@ -1,7 +1,6 @@
 // RecordingResult.swift
 
 struct RecordingResult {
-    var fileUri: String
     var mp4FileUri: String?
     var filename: String?
     var mimeType: String?
@@ -15,7 +14,6 @@ struct RecordingResult {
 }
 
 struct StartRecordingResult {
-    var fileUri: String?
     var mp4FileUri: String?
     var mimeType: String?
     var channels: Int?

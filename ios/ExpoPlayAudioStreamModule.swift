@@ -74,7 +74,6 @@ public class ExpoPlayAudioStreamModule: Module, MicrophoneDataDelegate {
                     promise.reject("ERROR", resError)
                 } else {
                     let resultDict: [String: Any] = [
-                        "fileUri": result.fileUri ?? "",
                         "mp4FileUri": result.mp4FileUri ?? "",
                         "channels": result.channels ?? 1,
                         "bitDepth": result.bitDepth ?? 16,
@@ -102,13 +101,21 @@ public class ExpoPlayAudioStreamModule: Module, MicrophoneDataDelegate {
         if self.isAudioSessionInitialized { return }
 
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(
-            .playAndRecord, mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+        if #available(iOS 14.5, *) {
+            try audioSession.setCategory(
+                .playAndRecord, mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .overrideMutedMicrophoneInterruption])
+        } else {
+            // Fallback on earlier versions
+        }
         if let settings = recordingSettings {
             try audioSession.setPreferredSampleRate(settings.sampleRate)
             try audioSession.setPreferredIOBufferDuration(1024 / settings.sampleRate)
         }
+        
+        // try? AVAudioSession.sharedInstance().setActive(false)
+        // try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+        
         try audioSession.setActive(true)
         isAudioSessionInitialized = true
     }

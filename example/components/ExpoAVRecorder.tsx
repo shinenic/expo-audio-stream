@@ -31,16 +31,16 @@ export default function ExpoAVRecorder() {
   }, [isRecording]);
 
   // Clean up sound object when component unmounts
-  useEffect(() => {
-    return () => {
-      if (sound) {
-        sound.unloadAsync();
-      }
-      if (recording) {
-        recording.stopAndUnloadAsync();
-      }
-    };
-  }, [sound, recording]);
+  // useEffect(() => {
+  //   return () => {
+  //     if (sound) {
+  //       sound.unloadAsync();
+  //     }
+  //     if (recording) {
+  //       recording.stopAndUnloadAsync();
+  //     }
+  //   };
+  // }, [sound, recording]);
 
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);

@@ -45,7 +45,6 @@ export const EncodingTypes = {
 export type Encoding = (typeof EncodingTypes)[keyof typeof EncodingTypes];
 
 export interface StartRecordingResult {
-  fileUri: string;
   mp4FileUri?: string;
   mimeType: string;
   channels?: number;
@@ -66,7 +65,6 @@ export interface RecordingConfig {
 }
 
 export interface AudioRecording {
-  fileUri: string;
   mp4FileUri?: string;
   filename: string;
   durationMs: number;

@@ -4,12 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { Subscription } from "expo-modules-core";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system";
-// import { BehaviorSubject, filter, firstValueFrom } from "rxjs";
-// import {
-//   FFmpegKit,
-//   FFmpegKitConfig,
-//   ReturnCode,
-// } from "ffmpeg-kit-react-native";
 import * as Sharing from "expo-sharing";
 import { Uploader } from "./uploader";
 import { Buffer } from "buffer";
@@ -19,6 +13,35 @@ const IOS_SAMPLE_RATE = 48000;
 const CHANNELS = 2;
 const ENCODING = "pcm_16bit";
 const RECORDING_INTERVAL = 5 * 1000;
+
+const diffTwoFiles = async (file1: string, file2: string) => {
+  const file1Buffer = await FileSystem.readAsStringAsync(file1, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const file2Buffer = await FileSystem.readAsStringAsync(file2, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  const binary1 = Buffer.from(file1Buffer, "base64");
+  const binary2 = Buffer.from(file2Buffer, "base64");
+
+  const isSameSize = binary1.length === binary2.length;
+
+  let isSameContent = isSameSize;
+  if (isSameSize) {
+    for (let i = 0; i < binary1.length; i++) {
+      if (binary1[i] !== binary2[i]) {
+        isSameContent = false;
+        break;
+      }
+    }
+  }
+
+  return {
+    isSameSize,
+    isSameContent,
+  };
+};
 
 const concatFileBufferAndSaveToFile = async (
   fileUris: string[],
@@ -234,9 +257,9 @@ export default function CustomRecorder() {
         JSON.stringify(recordingResult, null, 2)
       );
 
-      if (recordingResult?.fileUri) {
-        setRecordingUri(recordingResult.fileUri);
-      }
+      // if (recordingResult?.mp4FileUri) {
+      //   setRecordingUri(recordingResult.mp4FileUri);
+      // }
 
       if (eventListenerSubscriptionRef.current) {
         eventListenerSubscriptionRef.current.remove();
@@ -311,6 +334,21 @@ export default function CustomRecorder() {
 
             await Sharing.shareAsync(shareableUri);
           }}
+        />
+        <Button
+          onPress={async () => {
+            if (!mp4RecordingUri || !concatFileUri) {
+              return;
+            }
+
+            const { isSameSize, isSameContent } = await diffTwoFiles(
+              mp4RecordingUri,
+              concatFileUri
+            );
+            alert(`isSameSize: ${isSameSize}, isSameContent: ${isSameContent}`);
+          }}
+          title="Diff with source mp4 file"
+          disabled={!mp4RecordingUri || !concatFileUri}
         />
       </View>
 

@@ -6,12 +6,22 @@ import { BehaviorSubject, filter, firstValueFrom } from "rxjs";
 // const API = "http://192.168.1.123:3000";
 const API = "http://localhost:3000";
 
+/**
+ * This class satisfies the following requirements from API:
+ * - chunk files should be uploaded in order
+ * - only one file can be uploaded at a time
+ * 
+ * @TODO handle offline & reconnect
+ * @TODO handle background? (minor)
+ */
 export class Uploader {
   private sessionId$ = new BehaviorSubject<string | null>(null);
   private chunks: { uri: string; index: number }[] = [];
   private statusMap$ = new BehaviorSubject<{
     [key: number]: "pending" | "uploading" | "failed" | "uploaded";
   }>({});
+
+  private lastUploadedChunkIndex = -1;
 
   constructor() {
     fetch(`${API}/start`, {

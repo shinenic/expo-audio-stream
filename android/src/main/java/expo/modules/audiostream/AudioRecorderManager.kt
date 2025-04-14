@@ -16,6 +16,7 @@ import androidx.core.os.bundleOf
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.Session
 import com.arthenica.ffmpegkit.SessionState
 import expo.modules.kotlin.Promise
 import java.io.ByteArrayOutputStream
@@ -30,25 +31,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AudioRecorderManager(
     private val filesDir: File,
     private val permissionUtils: PermissionUtils,
-    private val audioDataEncoder: AudioDataEncoder,
     private val eventSender: EventSender,
     private val context: Context
 ) {
     private var audioRecord: AudioRecord? = null
     private var bufferSizeInBytes = 0
     private var isRecording = AtomicBoolean(false)
-    private val isPaused = AtomicBoolean(false)
     private var streamUuid: String? = null
-    private var audioFile: File? = null
-    private var recordingThread: Thread? = null
-    private var recordingStartTime: Long = 0
     private var totalRecordedTime: Long = 0
-    private var totalDataSize = 0
-    private var interval = 1000L  // Emit data every 1000 milliseconds (1 second)
     private var lastEmitTime = SystemClock.elapsedRealtime()
-    private var lastPauseTime = 0L
     private var pausedDuration = 0L
-    private var lastProcessedSize = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioRecordLock = Any()
     private val sentChunkIndices = HashSet<Int>()
@@ -67,12 +59,13 @@ class AudioRecorderManager(
     private var fileObserverRunning = AtomicBoolean(false)
     private val debounceHandler = Handler(Looper.getMainLooper())
     private var pendingFileChangeRunnable: Runnable? = null
-    private val DEBOUNCE_DELAY = 300L // 300 milliseconds debounce time
+    private val DEBOUNCE_DELAY = 300L
 
     private lateinit var recordingConfig: RecordingConfig
     private var mimeType = "audio/mp4"
     private var audioFormat: Int = AudioFormat.ENCODING_PCM_16BIT
 
+    // @TODO verify and remove this annotation
     @RequiresApi(Build.VERSION_CODES.R)
     fun startRecording(options: Map<String, Any?>, promise: Promise) {
         if (!permissionUtils.checkRecordingPermission()) {
@@ -80,7 +73,7 @@ class AudioRecorderManager(
             return
         }
 
-        if (isRecording.get() && !isPaused.get()) {
+        if (isRecording.get()) {
             promise.reject("ALREADY_RECORDING", "Recording is already in progress", null)
             return
         }
@@ -134,7 +127,6 @@ class AudioRecorderManager(
 
         // Update recordingConfig with potentially new encoding
         recordingConfig = tempRecordingConfig
-        interval = recordingConfig.interval
 
         // Recalculate bufferSizeInBytes for the format
         bufferSizeInBytes = AudioRecord.getMinBufferSize(
@@ -151,7 +143,7 @@ class AudioRecorderManager(
         Log.d(Constants.TAG, "AudioFormat: $audioFormat, BufferSize: $bufferSizeInBytes")
 
         // Initialize the AudioRecord if it's a new recording or if it's not currently paused
-        if (audioRecord == null || !isPaused.get()) {
+        if (audioRecord == null) {
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
                 recordingConfig.sampleRate,
@@ -181,11 +173,9 @@ class AudioRecorderManager(
             lastAudioChunkSize = 0
             isPipeClosed = false
             isFFmpegCompleted = false
-            
-            // Create empty file
+
             mp4File?.createNewFile()
-            
-            // Register FFmpeg pipe
+
             ffmpegPipe = FFmpegKitConfig.registerNewFFmpegPipe(context)
             if (ffmpegPipe == null) {
                 promise.reject("FFMPEG_PIPE_FAILED", "Failed to create FFmpeg pipe", null)
@@ -204,45 +194,11 @@ class AudioRecorderManager(
                     "-i $ffmpegPipe -c:a aac -b:a 192k -flush_packets 1 -max_delay 0 -fflags nobuffer " +
                     "-flags low_delay -f mp4 -movflags frag_keyframe+empty_moov+faststart -frag_duration 1000000 " +
                     "-y ${mp4File?.absolutePath}"
-            
-            Log.d(Constants.TAG, "FFmpeg command: $ffmpegCommand")
-            
-            // Execute FFmpeg in async mode
             FFmpegKit.executeAsync(ffmpegCommand, { session ->
-                Log.d(Constants.TAG, "FFmpeg session completed")
                 isFFmpegCompleted = true
-                
-                // Get session state and return code
-                val state = session?.state ?: SessionState.FAILED
-                val returnCode = session?.returnCode
-                
-                // if (returnCode != null && ReturnCode.isSuccess(returnCode)) {
-                //     Log.d(Constants.TAG, "FFmpeg process completed successfully with return code: ${returnCode.value}")
-                // } else if (state == SessionState.CANCELLED || session?.output?.contains("Exiting normally") == true) {
-                //     Log.d(Constants.TAG, "FFmpeg process cancelled normally")
-                // } else {
-                //     Log.e(Constants.TAG, "FFmpeg process failed: ${session?.failStackTrace ?: "Unknown error"}")
-                // }
-                
-                // If file observer is still running, create one final chunk
-                // @TODO check
-                if (fileObserverRunning.get()) {
-                    mainHandler.post {
-                        createAndEmitAudioChunk()
-                    }
-                }
-            }, { log ->
-                val message = log?.message ?: ""
-                // Filter out verbose stats logs
-                if (!message.contains("frame=") && !message.contains("fps=")) {
-                    Log.d(Constants.TAG, "FFmpeg log: $message")
-                }
-            }, null)
+            }, null, null)
             
-            // Open pipe for writing
             ffmpegPipeOutputStream = FileOutputStream(ffmpegPipe)
-            
-            // Start file monitoring
             startFileMonitoring()
             
         } catch (e: Exception) {
@@ -252,17 +208,11 @@ class AudioRecorderManager(
 
         // Start recording
         audioRecord?.startRecording()
-        isPaused.set(false)
         isRecording.set(true)
 
-        if (!isPaused.get()) {
-            recordingStartTime = System.currentTimeMillis() // Only reset start time if it's not a resume
-        }
-
-        recordingThread = Thread { recordingProcess() }.apply { start() }
+        Thread { recordingProcess() }.apply { start() }
 
         val result = bundleOf(
-            "fileUri" to "",
             "mp4FileUri" to mp4File?.toURI().toString(),
             "channels" to recordingConfig.channels,
             "bitDepth" to when (recordingConfig.encoding) {
@@ -293,7 +243,6 @@ class AudioRecorderManager(
 
     /**
      * Custom FileObserver that monitors changes to the MP4 file.
-     * More reliable than polling for changes.
      */
     private inner class CustomFileObserver(path: String) : FileObserver(path, MODIFY or CLOSE_WRITE) {
         override fun onEvent(event: Int, path: String?) {
@@ -308,26 +257,24 @@ class AudioRecorderManager(
         }
     }
     
-    /**
-     * Debounces file change events to avoid excessive processing.
-     * Only processes the last event within the debounce window.
-     */
     private fun debounceFileChange() {
         pendingFileChangeRunnable?.let {
             debounceHandler.removeCallbacks(it)
         }
         
         pendingFileChangeRunnable = Runnable {
-            if (fileObserverRunning.get()) {
-                mainHandler.post {
-                    createAndEmitAudioChunk()
-                }
+            mainHandler.post {
+                createAndEmitAudioChunk()
             }
         }.also {
             debounceHandler.postDelayed(it, DEBOUNCE_DELAY)
         }
     }
 
+    /**
+     * Creates and emits an audio chunk from the current MP4 file.
+     * Handles incremental data and checks for the last chunk.
+     */
     private fun createAndEmitAudioChunk() {
         if (mp4File == null || !mp4File!!.exists()) {
             Log.d(Constants.TAG, "MP4 file does not exist, skipping chunk creation")
@@ -335,7 +282,6 @@ class AudioRecorderManager(
         }
 
         try {
-            // Get current file size
             val fileSize = mp4File!!.length()
             
             // Skip if file size hasn't increased and it's not the last chunk
@@ -352,7 +298,7 @@ class AudioRecorderManager(
             val startOffset = lastAudioChunkSize
             val length = fileSize - startOffset
             
-            if (length > 0) {
+            if (length > 0 || isFFmpegCompleted) {
                 // Copy the incremental data to new chunk file
                 val randomAccessFile = RandomAccessFile(mp4File, "r")
                 randomAccessFile.seek(startOffset)
@@ -375,12 +321,12 @@ class AudioRecorderManager(
                 sentChunkIndices.add(audioChunkCounter)
                 audioChunkCounter++
                 
-                Log.d(Constants.TAG, "Created and emitted chunk ${audioChunkCounter-1} with size ${length} bytes, isLastChunk: $isFFmpegCompleted")
-            }
-            
-            // If this is the last chunk, stop file monitoring
-            if (isFFmpegCompleted) {
-                stopFileMonitoring()
+                Log.d(Constants.TAG, "Created and emitted chunk ${audioChunkCounter-1} with size ${length} bytes, isLastChunk: ${isFFmpegCompleted && isPipeClosed}")
+                
+                // If this is the last chunk, stop file monitoring
+                if (isFFmpegCompleted) {
+                    stopFileMonitoring()
+                }
             }
         } catch (e: Exception) {
             Log.e(Constants.TAG, "Error creating audio chunk", e)
@@ -392,26 +338,24 @@ class AudioRecorderManager(
         }
     }
 
+
     private fun stopFileMonitoring() {
+        if (!fileObserverRunning.get()) return
+        
         fileObserverRunning.set(false)
         
-        // Cancel any pending debounced callbacks
         pendingFileChangeRunnable?.let {
             debounceHandler.removeCallbacks(it)
         }
         
-        // Stop the file observer
         fileObserver?.stopWatching()
         fileObserver = null
-        
-        Log.d(Constants.TAG, "File monitoring stopped after final chunk")
     }
 
     private fun emitChunkUpdate(chunkFileUri: String, chunkIndex: Int, isLastChunk: Boolean, length: Long) {
         mainHandler.post {
             Log.d(Constants.TAG, "Emitting chunk update for chunk $chunkIndex, isLastChunk: $isLastChunk, length: $length")
             
-            // Send the event
             eventSender.sendExpoEvent(
                 Constants.AUDIO_CHUNK_UPDATE_EVENT_NAME,
                 bundleOf(
@@ -471,25 +415,21 @@ class AudioRecorderManager(
 
             // Process any final audio data
             try {
+                if (audioRecord != null && audioRecord!!.state == AudioRecord.STATE_INITIALIZED) {
+                    audioRecord!!.stop()
+                }
+                isRecording.set(false)
+                
                 val audioData = ByteArray(bufferSizeInBytes)
                 val bytesRead = audioRecord?.read(audioData, 0, bufferSizeInBytes) ?: -1
-                Log.d(Constants.TAG, "Last Read $bytesRead bytes")
                 if (bytesRead > 0) {
-                    emitAudioData(audioData, bytesRead)
-                    
                     // Write final data to FFmpeg pipe
                     ffmpegPipeOutputStream?.write(audioData, 0, bytesRead)
                     ffmpegPipeOutputStream?.flush()
                 }
                 
-                // Close FFmpeg pipe
+                // Close FFmpeg pipe - this will trigger the final processing
                 closeFfmpegPipe()
-
-                Log.d(Constants.TAG, "Stopping recording state = ${audioRecord?.state}")
-                if (audioRecord != null && audioRecord!!.state == AudioRecord.STATE_INITIALIZED) {
-                    Log.d(Constants.TAG, "Stopping AudioRecord")
-                    audioRecord!!.stop()
-                }
             } catch (e: IllegalStateException) {
                 Log.e(Constants.TAG, "Error reading from AudioRecord", e)
             } finally {
@@ -502,7 +442,6 @@ class AudioRecorderManager(
                 
                 // Create result bundle
                 val result = bundleOf(
-                    "fileUri" to "",
                     "mp4FileUri" to mp4File?.toURI().toString(),
                     "filename" to mp4File?.name,
                     "durationMs" to 0L, // Duration calculation would need to be implemented
@@ -520,8 +459,6 @@ class AudioRecorderManager(
                 promise.resolve(result)
 
                 // Reset recording state
-                isRecording.set(false)
-                isPaused.set(false)
                 totalRecordedTime = 0
                 pausedDuration = 0
             } catch (e: Exception) {
@@ -534,110 +471,20 @@ class AudioRecorderManager(
     private fun closeFfmpegPipe() {
         // Mark pipe as closed
         isPipeClosed = true
-        Log.d(Constants.TAG, "Marking FFmpeg pipe as closed")
         
-        // Add a short delay to ensure that the last data is written to the file
-        // before processing the final chunk
-        mainHandler.postDelayed({
-            // Ensure all data is written and close pipe
-            try {
-                ffmpegPipeOutputStream?.flush()
-                ffmpegPipeOutputStream?.close()
-                ffmpegPipeOutputStream = null
-                
-                if (ffmpegPipe != null) {
-                    FFmpegKitConfig.closeFFmpegPipe(ffmpegPipe)
-                    ffmpegPipe = null
-                    Log.d(Constants.TAG, "FFmpeg pipe closed")
-                }
-            } catch (e: Exception) {
-                Log.e(Constants.TAG, "Error closing FFmpeg pipe", e)
-            }
-        }, 100) // Short delay to ensure file is complete
-    }
-
-    fun pauseRecording(promise: Promise) {
-        if (isRecording.get() && !isPaused.get()) {
-            audioRecord?.stop()
-            lastPauseTime =
-                System.currentTimeMillis()  // Record the time when the recording was paused
-            isPaused.set(true)
-            promise.resolve("Recording paused")
-        } else {
-            promise.reject(
-                "NOT_RECORDING_OR_ALREADY_PAUSED",
-                "Recording is either not active or already paused",
-                null
-            )
-        }
-    }
-
-    fun resumeRecording(promise: Promise) {
-        if (isRecording.get() && !isPaused.get()) {
-            promise.reject("NOT_PAUSED", "Recording is not paused", null)
-            return
-        } else if (audioRecord == null) {
-            promise.reject("NOT_RECORDING", "Recording is not active", null)
-        }
-
-        // Calculate the duration the recording was paused
-        pausedDuration += System.currentTimeMillis() - lastPauseTime
-        isPaused.set(false)
-        audioRecord?.startRecording()
-        promise.resolve("Recording resumed")
-    }
-
-    fun getStatus(): Bundle {
-        synchronized(audioRecordLock) {
-            if (!isRecording.get()) {
-                Log.d(Constants.TAG, "Not recording --- skip status with default values")
-
-                return bundleOf(
-                    "isRecording" to false,
-                    "isPaused" to false,
-                    "mimeType" to mimeType,
-                    "size" to 0,
-                    "interval" to interval,
-                )
-            }
-
-            val fileSize = mp4File?.length() ?: 0
+        // Ensure all data is written and close pipe
+        try {
+            ffmpegPipeOutputStream?.flush()
+            ffmpegPipeOutputStream?.close()
+            ffmpegPipeOutputStream = null
             
-            // Note: Duration calculation for MP4 would require parsing the file
-            // This is a placeholder for actual implementation
-            val duration = 0L
-            
-            return bundleOf(
-                "durationMs" to duration,
-                "isRecording" to isRecording.get(),
-                "isPaused" to isPaused.get(),
-                "mimeType" to mimeType,
-                "size" to totalDataSize,
-                "interval" to recordingConfig.interval
-            )
-        }
-    }
-
-    fun listAudioFiles(promise: Promise) {
-        val fileList = filesDir.list()?.filter { it.endsWith(".mp4") || it.endsWith(".wav") }
-            ?.map { File(filesDir, it).absolutePath } ?: listOf()
-        promise.resolve(fileList)
-    }
-
-    fun clearAudioStorage(promise: Promise) {
-        val files = filesDir.listFiles()
-        var count = 0
-        
-        files?.forEach { file ->
-            if (file.name.endsWith(".mp4") || file.name.endsWith(".wav") || file.name.startsWith("chunk_")) {
-                if (file.delete()) {
-                    count++
-                }
+            if (ffmpegPipe != null) {
+                FFmpegKitConfig.closeFFmpegPipe(ffmpegPipe)
+                ffmpegPipe = null
             }
+        } catch (e: Exception) {
+            Log.e(Constants.TAG, "Error closing FFmpeg pipe", e)
         }
-        
-        Log.d(Constants.TAG, "Deleted $count audio files")
-        promise.resolve(count)
     }
 
     private fun recordingProcess() {
@@ -651,11 +498,6 @@ class AudioRecorderManager(
         Log.d(Constants.TAG, "Entering recording loop")
         
         while (isRecording.get() && !Thread.currentThread().isInterrupted) {
-            if (isPaused.get()) {
-                // If recording is paused, skip reading
-                continue
-            }
-
             val bytesRead = synchronized(audioRecordLock) {
                 audioRecord?.let {
                     if (it.state != AudioRecord.STATE_INITIALIZED) {
@@ -671,19 +513,15 @@ class AudioRecorderManager(
             }
             
             if (bytesRead > 0) {
-                totalDataSize += bytesRead
                 accumulatedAudioData.write(audioData, 0, bytesRead)
 
                 // Emit audio data at defined intervals or if recording is stopped
                 val currentTime = SystemClock.elapsedRealtime()
-                val intervalElapsed = currentTime - lastEmitTime >= interval
+                val intervalElapsed = currentTime - lastEmitTime >= recordingConfig.interval
                 
                 if (intervalElapsed || !isRecording.get()) {
                     // Copy accumulated data
                     val dataToProcess = accumulatedAudioData.toByteArray()
-                    
-                    // Emit audio data to listener
-                    emitAudioData(dataToProcess, dataToProcess.size)
                     
                     // Write to FFmpeg pipe
                     ffmpegPipeOutputStream?.write(dataToProcess)
@@ -698,36 +536,5 @@ class AudioRecorderManager(
         }
         
         Log.d(Constants.TAG, "Exiting recording loop")
-    }
-
-    private fun emitAudioData(audioData: ByteArray, length: Int) {
-        val encodedBuffer = audioDataEncoder.encodeToBase64(audioData)
-
-        val fileSize = mp4File?.length() ?: 0
-        val from = lastProcessedSize
-        val deltaSize = length.toLong()
-        lastProcessedSize = totalDataSize.toLong()
-
-        // Calculate position (approximate)
-        val positionInMs = (from * 1000) / (recordingConfig.sampleRate * recordingConfig.channels * (if (recordingConfig.encoding == "pcm_8bit") 1 else 2))
-
-        mainHandler.post {
-            try {
-                eventSender.sendExpoEvent(
-                    Constants.AUDIO_EVENT_NAME, bundleOf(
-                        "fileUri" to mp4File?.toURI().toString(),
-                        "lastEmittedSize" to from,
-                        "encoded" to encodedBuffer,
-                        "deltaSize" to deltaSize,
-                        "position" to positionInMs,
-                        "mimeType" to mimeType,
-                        "totalSize" to fileSize,
-                        "streamUuid" to streamUuid
-                    )
-                )
-            } catch (e: Exception) {
-                Log.e(Constants.TAG, "Failed to send event", e)
-            }
-        }
     }
 }

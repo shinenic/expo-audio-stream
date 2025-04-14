@@ -17,6 +17,8 @@ TODOs
 - [ ] properly delete cache/chunk files
 - [ ] the volume is low on iOS, check why
 - [ ] test if audio input changed
+- [ ] any memory leak? (after inspect, the memory seems to be released after a few rounds)
+- [v] remove unused comment
 
 # Android:
 - [ ] Test if record more than once
@@ -35,3 +37,5 @@ TODOs
 - [ ] properly delete cache/chunk files
 - [ ] the volume is low on iOS, check why
 - [ ] test if audio input changed
+- [ ] any memory leak?
+- [ ] remove unused comment
